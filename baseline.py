@@ -12,6 +12,32 @@ import argparse
 import os
 from transformers import PretrainedConfig, PreTrainedModel
 
+# 添加 EarlyStopping 类
+class EarlyStopping:
+    def __init__(self, patience=7, min_delta=0):
+        """
+        初始化早停
+        Args:
+            patience (int): 容忍多少个epoch验证集性能没有提升
+            min_delta (float): 最小变化阈值，小于这个值视为没有提升
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+        
+    def __call__(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+
 class VADConfig(PretrainedConfig):
     def __init__(self, input_dim=768, hidden_dim=256, **kwargs):
         super().__init__(**kwargs)
@@ -299,10 +325,13 @@ def main():
     parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--checkpoint_path', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--epochs', type=int, default=60)
     parser.add_argument('--lr', type=float, default=5e-5)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='./checkpoints')
+    # 添加早停相关的参数
+    parser.add_argument('--patience', type=int, default=5, help='早停的耐心值')
+    parser.add_argument('--min_delta', type=float, default=0.01, help='早停的最小增益阈值')
     
     args = parser.parse_args()
     
@@ -348,6 +377,8 @@ def main():
         optimizer = optim.AdamW(model.parameters(), lr=args.lr)
         criterion = CCCLoss()
         
+        # 初始化早停
+        early_stopping = EarlyStopping(patience=args.patience, min_delta=args.min_delta)
         best_eval_ccc = -float('inf')
         best_model = None
         
@@ -356,6 +387,7 @@ def main():
             eval_v, eval_a, eval_d = validate_and_test(model, eval_loader, device)
             eval_ccc_avg = (eval_v + eval_a + eval_d) / 3
             
+            # 检查是否需要保存最佳模型
             if eval_ccc_avg > best_eval_ccc:
                 best_eval_ccc = eval_ccc_avg
                 best_model = model.state_dict()
@@ -369,6 +401,12 @@ def main():
                 f"Eval CCC: V={eval_v:.3f}, A={eval_a:.3f}, D={eval_d:.3f} | "
                 f"Avg={eval_ccc_avg:.3f}"
             )
+            
+            # 早停检查
+            early_stopping(1 - eval_ccc_avg)  # 使用1-CCC因为我们希望CCC越大越好
+            if early_stopping.early_stop:
+                logging.info(f'Early stopping triggered at epoch {epoch+1}')
+                break
         
         model.load_state_dict(best_model)
         test_v, test_a, test_d = validate_and_test(model, test_loader, device)
