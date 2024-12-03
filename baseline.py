@@ -1,26 +1,17 @@
-from torch import nn, optim
-import soundfile as sf
-import torch.nn.functional as F
 import torch
+from torch import nn, optim
 import numpy as np
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from tqdm import tqdm
 import pandas as pd
 import logging
-import fairseq
 import argparse
 import os
 from transformers import PretrainedConfig, PreTrainedModel
 
-# 添加 EarlyStopping 类
+# EarlyStopping类保持不变
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0):
-        """
-        初始化早停
-        Args:
-            patience (int): 容忍多少个epoch验证集性能没有提升
-            min_delta (float): 最小变化阈值，小于这个值视为没有提升
-        """
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -44,36 +35,8 @@ class VADConfig(PretrainedConfig):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
 
-class Emotion2vecExtractor:
-    def __init__(self, model_path, checkpoint_path):
-        class UserDirModule:
-            def __init__(self, user_dir):
-                self.user_dir = user_dir
-                
-        model_path = UserDirModule(model_path)
-        fairseq.utils.import_user_module(model_path)
-        
-        model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task(
-            [checkpoint_path],
-        )
-        self.model = model[0].eval().cuda()
-        self.task = task
-
-    def extract_features(self, audio_path):
-        wav, sr = sf.read(audio_path)
-        assert sr == 16000 and len(wav.shape) == 1
-        
-        with torch.no_grad():
-            source = torch.from_numpy(wav).float().cuda()
-            if self.task.cfg.normalize:
-                source = F.layer_norm(source, source.shape)
-            source = source.view(1, -1)
-            
-            res = self.model.extract_features(source, padding_mask=None, remove_extra_tokens=True)
-            return res['x'].squeeze(0).cpu()
-
 def collate_fn(batch):
-    max_len = max([b["net_input"]["feats"].shape[0] for b in batch])
+    max_len = max([b["features"].shape[0] for b in batch])
     
     batch_feats = []
     batch_padding_masks = []
@@ -81,7 +44,7 @@ def collate_fn(batch):
     batch_labels = []
     
     for item in batch:
-        feats = item["net_input"]["feats"]
+        feats = item["features"]
         curr_len = feats.shape[0]
         pad_len = max_len - curr_len
         
@@ -104,18 +67,15 @@ def collate_fn(batch):
     
     return {
         "id": batch_ids,
-        "net_input": {
-            "feats": torch.stack(batch_feats),
-            "padding_mask": torch.stack(batch_padding_masks).bool()
-        },
+        "features": torch.stack(batch_feats),
+        "padding_mask": torch.stack(batch_padding_masks).bool(),
         "labels": torch.stack(batch_labels)
     }
 
 class EmotionDataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir, csv_path, feature_extractor):
+    def __init__(self, feature_dir, csv_path):
         self.df = pd.read_csv(csv_path)
-        self.root_dir = root_dir
-        self.feature_extractor = feature_extractor
+        self.feature_dir = feature_dir
         
         self.vad_labels = []
         for vad_str in self.df['VAD_normalized']:
@@ -127,17 +87,14 @@ class EmotionDataset(torch.utils.data.Dataset):
         
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        audio_path = os.path.join(self.root_dir, f"{row['FileName']}")
+        feature_path = os.path.join(self.feature_dir, f"{os.path.splitext(row['FileName'])[0]}.npy")
         
-        features = self.feature_extractor.extract_features(audio_path)
+        features = torch.from_numpy(np.load(feature_path)).float()
         label = self.vad_labels[idx]
         
         return {
             "id": row['FileName'],
-            "net_input": {
-                "feats": features,
-                "padding_mask": torch.zeros(features.size(0))
-            },
+            "features": features,
             "labels": label
         }
 
@@ -161,25 +118,6 @@ class VADModel(PreTrainedModel):
             x = x.mean(dim=1)
         x = torch.sigmoid(self.post_net(x))
         return x
-    
-    def save_pretrained(self, save_directory):
-        # 确保目录存在
-        os.makedirs(save_directory, exist_ok=True)
-        
-        # 保存配置
-        self.config.save_pretrained(save_directory)
-        
-        # 保存模型权重
-        state_dict = self.state_dict()
-        torch.save(state_dict, os.path.join(save_directory, "pytorch_model.bin"))
-        
-    @classmethod
-    def from_pretrained(cls, pretrained_model_path, *model_args, **kwargs):
-        config = VADConfig.from_pretrained(pretrained_model_path)
-        model = cls(config)
-        state_dict = torch.load(os.path.join(pretrained_model_path, "pytorch_model.bin"))
-        model.load_state_dict(state_dict)
-        return model
 
 def compute_dimension_ccc(preds, labels):
     preds_mean = torch.mean(preds)
@@ -205,6 +143,52 @@ class CCCLoss(nn.Module):
         mean_ccc = (ccc_v + ccc_a + ccc_d) / 3.0
         return torch.tensor(1.0, device=preds.device) - mean_ccc
 
+def split_by_speaker(df):
+    """基于说话人ID划分数据集为5折"""
+    df['speaker'] = df['FileName'].apply(lambda x: x.split('_')[1])
+    speakers = sorted(df['speaker'].unique())
+    
+    n_speakers = len(speakers)
+    base_size = n_speakers // 5
+    remainder = n_speakers % 5
+    
+    np.random.shuffle(speakers)
+    
+    folds = []
+    start_idx = 0
+    
+    for i in range(5):
+        fold_size = base_size + (1 if i < remainder else 0)
+        end_idx = start_idx + fold_size
+        
+        fold_speakers = speakers[start_idx:end_idx]
+        fold_idx = df[df['speaker'].isin(fold_speakers)].index.values
+        
+        folds.append(fold_idx)
+        start_idx = end_idx
+        
+    for i, fold in enumerate(folds):
+        print(f"Fold {i+1} size: {len(fold)} samples, "
+              f"with {len(set(df.iloc[fold]['speaker']))} speakers")
+              
+    return folds
+
+def get_train_eval_test_split(df, fold_idx, all_folds):
+    """获取当前折的训练、验证和测试集划分"""
+    test_idx = np.array(all_folds[fold_idx])
+    eval_idx = np.array(all_folds[(fold_idx + 1) % 5])
+    
+    train_folds = [all_folds[i] for i in range(5) 
+                  if i != fold_idx and i != (fold_idx + 1) % 5]
+    train_idx = np.concatenate(train_folds)
+    
+    print(f"\nFold {fold_idx + 1} split info:")
+    print(f"Train set: {len(train_idx)} samples")
+    print(f"Eval set: {len(eval_idx)} samples")
+    print(f"Test set: {len(test_idx)} samples\n")
+    
+    return train_idx, eval_idx, test_idx
+
 def train_one_epoch(model, optimizer, criterion, train_loader, device):
     model.train()
     total_loss = 0.0
@@ -212,13 +196,12 @@ def train_one_epoch(model, optimizer, criterion, train_loader, device):
     
     progress_bar = tqdm(train_loader, desc='Training', leave=False)
     for batch in progress_bar:
-        ids = batch["id"]
-        feats = batch["net_input"]["feats"].to(device)
-        padding_mask = batch["net_input"]["padding_mask"].to(device)
+        features = batch["features"].to(device)
+        padding_mask = batch["padding_mask"].to(device)
         labels = batch["labels"].to(device)
         
         optimizer.zero_grad()
-        outputs = model(feats, padding_mask)
+        outputs = model(features, padding_mask)
         loss = criterion(outputs, labels)
         
         loss.backward()
@@ -236,18 +219,17 @@ def validate_and_test(model, data_loader, device):
     all_preds = []
     all_labels = []
     
-    progress_bar = tqdm(data_loader, desc='Evaluating', leave=False)
     with torch.no_grad():
-        for batch in progress_bar:
-            feats = batch["net_input"]["feats"].to(device)
-            padding_mask = batch["net_input"]["padding_mask"].to(device)
+        for batch in tqdm(data_loader, desc='Evaluating', leave=False):
+            features = batch["features"].to(device)
+            padding_mask = batch["padding_mask"].to(device)
             labels = batch["labels"].to(device)
             
-            outputs = model(feats, padding_mask)
+            outputs = model(features, padding_mask)
             
             all_preds.append(outputs)
             all_labels.append(labels)
-            
+    
     all_preds = torch.cat(all_preds, dim=0)
     all_labels = torch.cat(all_labels, dim=0)
     
@@ -257,81 +239,17 @@ def validate_and_test(model, data_loader, device):
     
     return ccc_v, ccc_a, ccc_d
 
-def split_by_speaker(df):
-    # 从文件名中提取说话人ID (例如: MSP-PODCAST_1353 -> 1353)
-    df['speaker'] = df['FileName'].apply(lambda x: x.split('_')[1])
-    speakers = sorted(df['speaker'].unique())
-    
-    # 计算基本每折大小和余数
-    n_speakers = len(speakers)
-    base_size = n_speakers // 5
-    remainder = n_speakers % 5
-    
-    # 随机打乱说话人顺序
-    np.random.shuffle(speakers)
-    
-    # 分配说话人到每个fold
-    folds = []
-    start_idx = 0
-    
-    for i in range(5):
-        # 如果有余数，前remainder个fold多分配一个说话人
-        fold_size = base_size + (1 if i < remainder else 0)
-        end_idx = start_idx + fold_size
-        
-        # 获取当前fold的说话人
-        fold_speakers = speakers[start_idx:end_idx]
-        
-        # 获取属于这些说话人的所有样本索引
-        fold_idx = df[df['speaker'].isin(fold_speakers)].index.values
-        
-        folds.append(fold_idx)
-        start_idx = end_idx
-        
-    # 打印每个fold的大小，用于调试
-    for i, fold in enumerate(folds):
-        print(f"Fold {i+1} size: {len(fold)} samples, "
-              f"with {len(set(df.iloc[fold]['speaker']))} speakers")
-              
-    return folds
-
-def get_train_eval_test_split(df, fold_idx, all_folds):
-    """
-    将数据集划分为训练、验证和测试集
-    fold_idx对应的fold作为测试集
-    (fold_idx + 1) % 5对应的fold作为验证集
-    其余的fold作为训练集
-    """
-    test_idx = np.array(all_folds[fold_idx])
-    eval_idx = np.array(all_folds[(fold_idx + 1) % 5])
-    
-    # 其余fold作为训练集
-    train_folds = [all_folds[i] for i in range(5) 
-                  if i != fold_idx and i != (fold_idx + 1) % 5]
-    train_idx = np.concatenate(train_folds)
-    
-    # 打印划分信息
-    print(f"\nFold {fold_idx + 1} split info:")
-    print(f"Train set: {len(train_idx)} samples")
-    print(f"Eval set: {len(eval_idx)} samples")
-    print(f"Test set: {len(test_idx)} samples\n")
-    
-    return train_idx, eval_idx, test_idx
-
 def main():
     parser = argparse.ArgumentParser(description='Training VAD prediction model')
-    parser.add_argument('--audio_path', type=str, required=True)
+    parser.add_argument('--feature_dir', type=str, required=True)
     parser.add_argument('--csv_path', type=str, required=True)
-    parser.add_argument('--model_path', type=str, required=True)
-    parser.add_argument('--checkpoint_path', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--epochs', type=int, default=60)
-    parser.add_argument('--lr', type=float, default=5e-5)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--save_dir', type=str, default='./checkpoints')
-    # 添加早停相关的参数
-    parser.add_argument('--patience', type=int, default=5, help='早停的耐心值')
-    parser.add_argument('--min_delta', type=float, default=0.01, help='早停的最小增益阈值')
+    parser.add_argument('--epochs', type=int, default=40)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--seed', type=int, default=20)
+    parser.add_argument('--save_dir', type=str, default='./models')
+    parser.add_argument('--patience', type=int, default=10)
+    parser.add_argument('--min_delta', type=float, default=0.01)
     
     args = parser.parse_args()
     
@@ -350,67 +268,111 @@ def main():
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    feature_extractor = Emotion2vecExtractor(args.model_path, args.checkpoint_path)
-    dataset = EmotionDataset(args.audio_path, args.csv_path, feature_extractor)
+    dataset = EmotionDataset(args.feature_dir, args.csv_path)
     
+    # 获取输入特征维度
+    sample_feature = np.load(os.path.join(args.feature_dir, 
+                           f"{os.path.splitext(dataset.df['FileName'].iloc[0])[0]}.npy"))
+    input_dim = sample_feature.shape[1]
+    
+    # 基于说话人进行5折交叉验证
     folds = split_by_speaker(dataset.df)
     fold_results = []
     
     for fold in range(5):
         logging.info(f"\n{'='*50}\nFold {fold+1}/5\n{'='*50}")
         
+        # 创建当前fold的保存目录
+        fold_dir = os.path.join(args.save_dir, f'fold{fold+1}')
+        os.makedirs(fold_dir, exist_ok=True)
+        
         train_idx, eval_idx, test_idx = get_train_eval_test_split(dataset.df, fold, folds)
         
-        train_sampler = SubsetRandomSampler(train_idx)
-        eval_sampler = SubsetRandomSampler(eval_idx)
-        test_sampler = SubsetRandomSampler(test_idx)
-        
         train_loader = DataLoader(dataset, batch_size=args.batch_size,
-                                sampler=train_sampler, collate_fn=collate_fn)
+                                sampler=SubsetRandomSampler(train_idx),
+                                collate_fn=collate_fn)
         eval_loader = DataLoader(dataset, batch_size=args.batch_size,
-                               sampler=eval_sampler, collate_fn=collate_fn)
+                               sampler=SubsetRandomSampler(eval_idx),
+                               collate_fn=collate_fn)
         test_loader = DataLoader(dataset, batch_size=args.batch_size,
-                               sampler=test_sampler, collate_fn=collate_fn)
+                               sampler=SubsetRandomSampler(test_idx),
+                               collate_fn=collate_fn)
         
-        config = VADConfig()
+        config = VADConfig(input_dim=input_dim)
         model = VADModel(config).to(device)
         optimizer = optim.AdamW(model.parameters(), lr=args.lr)
         criterion = CCCLoss()
-        
-        # 初始化早停
         early_stopping = EarlyStopping(patience=args.patience, min_delta=args.min_delta)
-        best_eval_ccc = -float('inf')
+        
+        best_val_ccc = -float('inf')
         best_model = None
+        
+        # 创建性能跟踪文件
+        metrics_file = os.path.join(fold_dir, 'metrics.csv')
+        with open(metrics_file, 'w') as f:
+            f.write('epoch,train_loss,val_ccc_v,val_ccc_a,val_ccc_d,val_ccc_avg\n')
         
         for epoch in range(args.epochs):
             train_loss = train_one_epoch(model, optimizer, criterion, train_loader, device)
-            eval_v, eval_a, eval_d = validate_and_test(model, eval_loader, device)
-            eval_ccc_avg = (eval_v + eval_a + eval_d) / 3
+            val_v, val_a, val_d = validate_and_test(model, eval_loader, device)
+            val_ccc_avg = (val_v + val_a + val_d) / 3
             
-            # 检查是否需要保存最佳模型
-            if eval_ccc_avg > best_eval_ccc:
-                best_eval_ccc = eval_ccc_avg
-                best_model = model.state_dict()
-                save_directory = os.path.join(args.save_dir, f'best_model_fold{fold+1}')
-                model.save_pretrained(save_directory)
-                config.save_pretrained(save_directory)
+            # 保存每个epoch的模型
+            epoch_dir = os.path.join(fold_dir, f'epoch{epoch+1}')
+            os.makedirs(epoch_dir, exist_ok=True)
+            
+            # 保存模型和配置
+            model.save_pretrained(epoch_dir)
+            
+            # 保存优化器状态
+            torch.save(optimizer.state_dict(), os.path.join(epoch_dir, 'optimizer.pt'))
+            
+            # 保存训练指标
+            with open(metrics_file, 'a') as f:
+                f.write(f'{epoch+1},{train_loss:.4f},{val_v:.4f},{val_a:.4f},{val_d:.4f},{val_ccc_avg:.4f}\n')
             
             logging.info(
                 f"Fold {fold+1}, Epoch {epoch+1:3d} | "
                 f"Loss: {train_loss:.4f} | "
-                f"Eval CCC: V={eval_v:.3f}, A={eval_a:.3f}, D={eval_d:.3f} | "
-                f"Avg={eval_ccc_avg:.3f}"
+                f"Val CCC: V={val_v:.3f}, A={val_a:.3f}, D={val_d:.3f} | "
+                f"Avg={val_ccc_avg:.3f}"
             )
             
+            # 更新最佳模型
+            if val_ccc_avg > best_val_ccc:
+                best_val_ccc = val_ccc_avg
+                best_model = model.state_dict()
+                # 创建并保存最佳模型
+                best_model_dir = os.path.join(fold_dir, 'best_model')
+                os.makedirs(best_model_dir, exist_ok=True)
+                model.save_pretrained(best_model_dir)
+                logging.info(f"Saved new best model with val_ccc={val_ccc_avg:.3f}")
+            
+            # 保存checkpoint以便恢复训练
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_ccc': best_val_ccc,
+                'config': config.to_dict()
+            }
+            torch.save(checkpoint, os.path.join(fold_dir, 'checkpoint.pt'))
+            
             # 早停检查
-            early_stopping(1 - eval_ccc_avg)  # 使用1-CCC因为我们希望CCC越大越好
+            early_stopping(1 - val_ccc_avg)
             if early_stopping.early_stop:
-                logging.info(f'Early stopping triggered at epoch {epoch+1}')
+                logging.info(f"Early stopping triggered at epoch {epoch+1}")
                 break
         
+        # 加载最佳模型进行测试
         model.load_state_dict(best_model)
         test_v, test_a, test_d = validate_and_test(model, test_loader, device)
         test_ccc_avg = (test_v + test_a + test_d) / 3
+        
+        # 保存测试结果
+        with open(os.path.join(fold_dir, 'test_results.txt'), 'w') as f:
+            f.write(f"Test CCC:\nValence: {test_v:.3f}\nArousal: {test_a:.3f}\n"
+                   f"Dominance: {test_d:.3f}\nAverage: {test_ccc_avg:.3f}")
         
         fold_results.append((test_v, test_a, test_d))
         logging.info(
@@ -419,6 +381,7 @@ def main():
             f"Avg={test_ccc_avg:.3f}"
         )
     
+    # 计算并保存所有fold的最终结果
     avg_v = np.mean([res[0] for res in fold_results])
     avg_a = np.mean([res[1] for res in fold_results])
     avg_d = np.mean([res[2] for res in fold_results])
@@ -428,14 +391,20 @@ def main():
     std_a = np.std([res[1] for res in fold_results])
     std_d = np.std([res[2] for res in fold_results])
     
-    logging.info(f"\n{'='*50}\nFinal Cross-Validation Results\n{'='*50}")
-    logging.info(
-        f"Average CCC ± std: \n"
+    final_results = (
+        f"Final Cross-Validation Results\n"
+        f"Average CCC ± std:\n"
         f"Valence: {avg_v:.3f} ± {std_v:.3f}\n"
         f"Arousal: {avg_a:.3f} ± {std_a:.3f}\n"
         f"Dominance: {avg_d:.3f} ± {std_d:.3f}\n"
         f"Overall: {avg_all:.3f}"
     )
+    
+    logging.info(f"\n{'='*50}\n{final_results}\n{'='*50}")
+    
+    # 保存最终结果
+    with open(os.path.join(args.save_dir, 'final_results.txt'), 'w') as f:
+        f.write(final_results)
 
 if __name__ == '__main__':
-   main()
+    main()
