@@ -1,0 +1,7 @@
+emo2vec_large_features/
+facebook/
+hubert_features/
+hubert_large_features/
+wav2vec_large_features/
+results/
+models/

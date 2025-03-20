@@ -1,0 +1,9 @@
+python UMAP.py \
+    --emotion2vec_dir ./emo2vec_large_features \
+    --hubert_dir ./hubert_large_features \
+    --model_path ./models/msp_podcast/epoch1/pytorch_model.bin \
+    --csv_path /home/wangchenhao/Github/Dynamic/csv_files/IEMOCAP.csv \
+    --output_dir ./results \
+    --n_neighbors 15 \
+    --min_dist 0.3 \
+    --use_cpu

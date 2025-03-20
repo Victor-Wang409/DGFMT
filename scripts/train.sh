@@ -1,9 +1,4 @@
-python baseline.py \
-    --feature_dir /home/wangchenhao/Github/baseline/emotion2vec_features \
-    --csv_path ./Dataset.csv \
-    --batch_size 128 \
-    --lr 1e-4 \
-    --save_dir ./models \
-    --patience 10 \
-    --seed 20 \
-    --min_delta 0.01
+python main.py \
+    --emotion2vec_dir ./emo2vec_large_features \
+    --hubert_dir ./hubert_large_features \
+    --csv_path ./csv_files/IEMOCAP.csv

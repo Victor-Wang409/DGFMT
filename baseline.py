@@ -9,7 +9,6 @@ import argparse
 import os
 from transformers import PretrainedConfig, PreTrainedModel
 
-# EarlyStopping类保持不变
 class EarlyStopping:
     def __init__(self, patience=7, min_delta=0):
         self.patience = patience
@@ -28,12 +27,6 @@ class EarlyStopping:
         else:
             self.best_loss = val_loss
             self.counter = 0
-
-class VADConfig(PretrainedConfig):
-    def __init__(self, input_dim=768, hidden_dim=256, **kwargs):
-        super().__init__(**kwargs)
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
 
 def collate_fn(batch):
     max_len = max([b["features"].shape[0] for b in batch])
@@ -98,6 +91,15 @@ class EmotionDataset(torch.utils.data.Dataset):
             "labels": label
         }
 
+class VADConfig(PretrainedConfig):
+    def __init__(
+        self,
+        input_dim=768,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.input_dim = input_dim
+
 class VADModel(PreTrainedModel):
     config_class = VADConfig
     base_model_prefix = "vad"
@@ -105,18 +107,20 @@ class VADModel(PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.config = config
-        self.pre_net = nn.Linear(config.input_dim, config.hidden_dim)
-        self.post_net = nn.Linear(config.hidden_dim, 3)
-        self.activate = nn.ReLU()
+        
+        # 只使用一个线性层,直接从输入特征维度映射到3个VAD值
+        self.linear = nn.Linear(config.input_dim, 3)
     
     def forward(self, x, padding_mask=None):
-        x = self.activate(self.pre_net(x))
+        # 对序列进行平均池化
         if padding_mask is not None:
             x = x * (1 - padding_mask.unsqueeze(-1).float())
             x = x.sum(dim=1) / (1 - padding_mask.float()).sum(dim=1, keepdim=True)
         else:
             x = x.mean(dim=1)
-        x = torch.sigmoid(self.post_net(x))
+            
+        # 通过线性层得到预测结果
+        x = torch.sigmoid(self.linear(x))
         return x
 
 def compute_dimension_ccc(preds, labels):
@@ -143,51 +147,46 @@ class CCCLoss(nn.Module):
         mean_ccc = (ccc_v + ccc_a + ccc_d) / 3.0
         return torch.tensor(1.0, device=preds.device) - mean_ccc
 
-def split_by_speaker(df):
+def split_by_iemocap(df):
     """基于说话人ID划分数据集为5折"""
-    df['speaker'] = df['FileName'].apply(lambda x: x.split('_')[1])
-    speakers = sorted(df['speaker'].unique())
-    
-    n_speakers = len(speakers)
-    base_size = n_speakers // 5
-    remainder = n_speakers % 5
-    
-    np.random.shuffle(speakers)
-    
+    # 从文件名中提取session信息(格式如Ses01F_impro01_F000)
+    df['session'] = df['FileName'].apply(lambda x: x[:5])  # 提取Ses01这样的前缀
+    sessions = sorted(df['session'].unique())  # 获取所有session ['Ses01', 'Ses02', ...]
+    # 确保正好有5个session
+    assert len(sessions) == 5, f"预期5个session,但找到{len(sessions)}个session"
+    # 用于存储5折的结果
     folds = []
-    start_idx = 0
+    # 为每个session创建一折
+    for test_session in sessions:
+        # 获取当前session的所有样本索引作为测试集
+        test_idx = df[df['session'] == test_session].index.values
+        # 获取其他session的样本索引
+        other_sessions_idx = df[df['session'] != test_session].index.values
+        # 随机打乱其他session的索引
+        np.random.shuffle(other_sessions_idx)
+        # 计算验证集大小(其他session样本总数的20%)
+        eval_size = int(len(other_sessions_idx) * 0.2)
+        # 划分验证集和训练集
+        eval_idx = other_sessions_idx[:eval_size]
+        train_idx = other_sessions_idx[eval_size:]
+        # 将当前折的划分结果存储在字典中
+        fold_info = {
+            'train_idx': train_idx,
+            'eval_idx': eval_idx,
+            'test_idx': test_idx
+        }
+        folds.append(fold_info)
+        # 打印当前折的详细信息
+        print(f"\nFold for test session {test_session}:")
+        print(f"Training set: {len(train_idx)} samples")
+        print(f"Validation set: {len(eval_idx)} samples")
+        print(f"Test set: {len(test_idx)} samples")
+        # 打印每个集合中包含的session
+        train_sessions = sorted(df.iloc[train_idx]['session'].unique())
+        eval_sessions = sorted(df.iloc[eval_idx]['session'].unique())
+        test_sessions = sorted(df.iloc[test_idx]['session'].unique())
     
-    for i in range(5):
-        fold_size = base_size + (1 if i < remainder else 0)
-        end_idx = start_idx + fold_size
-        
-        fold_speakers = speakers[start_idx:end_idx]
-        fold_idx = df[df['speaker'].isin(fold_speakers)].index.values
-        
-        folds.append(fold_idx)
-        start_idx = end_idx
-        
-    for i, fold in enumerate(folds):
-        print(f"Fold {i+1} size: {len(fold)} samples, "
-              f"with {len(set(df.iloc[fold]['speaker']))} speakers")
-              
     return folds
-
-def get_train_eval_test_split(df, fold_idx, all_folds):
-    """获取当前折的训练、验证和测试集划分"""
-    test_idx = np.array(all_folds[fold_idx])
-    eval_idx = np.array(all_folds[(fold_idx + 1) % 5])
-    
-    train_folds = [all_folds[i] for i in range(5) 
-                  if i != fold_idx and i != (fold_idx + 1) % 5]
-    train_idx = np.concatenate(train_folds)
-    
-    print(f"\nFold {fold_idx + 1} split info:")
-    print(f"Train set: {len(train_idx)} samples")
-    print(f"Eval set: {len(eval_idx)} samples")
-    print(f"Test set: {len(test_idx)} samples\n")
-    
-    return train_idx, eval_idx, test_idx
 
 def train_one_epoch(model, optimizer, criterion, train_loader, device):
     model.train()
@@ -243,12 +242,12 @@ def main():
     parser = argparse.ArgumentParser(description='Training VAD prediction model')
     parser.add_argument('--feature_dir', type=str, required=True)
     parser.add_argument('--csv_path', type=str, required=True)
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--epochs', type=int, default=40)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--epochs', type=int, default=80)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=20)
     parser.add_argument('--save_dir', type=str, default='./models')
-    parser.add_argument('--patience', type=int, default=10)
+    parser.add_argument('--patience', type=int, default=7)
     parser.add_argument('--min_delta', type=float, default=0.01)
     
     args = parser.parse_args()
@@ -276,17 +275,18 @@ def main():
     input_dim = sample_feature.shape[1]
     
     # 基于说话人进行5折交叉验证
-    folds = split_by_speaker(dataset.df)
+    folds = split_by_iemocap(dataset.df)
     fold_results = []
     
     for fold in range(5):
         logging.info(f"\n{'='*50}\nFold {fold+1}/5\n{'='*50}")
-        
         # 创建当前fold的保存目录
         fold_dir = os.path.join(args.save_dir, f'fold{fold+1}')
         os.makedirs(fold_dir, exist_ok=True)
-        
-        train_idx, eval_idx, test_idx = get_train_eval_test_split(dataset.df, fold, folds)
+        fold_data = folds[fold]
+        train_idx = fold_data['train_idx']
+        eval_idx = fold_data['eval_idx']
+        test_idx = fold_data['test_idx']
         
         train_loader = DataLoader(dataset, batch_size=args.batch_size,
                                 sampler=SubsetRandomSampler(train_idx),
