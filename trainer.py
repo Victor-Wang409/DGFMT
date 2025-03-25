@@ -50,7 +50,7 @@ class TrainingManager:
             # 获取标签索引,用于对比学习
             emotion_indices = torch.argmax(emotion_labels, dim=1)
             
-            # 前向传播,增加对比学习特征
+            # 前向传播
             outputs, (e2v_weight, hub_weight), contrast_features = model(
                 emotion2vec_features,
                 hubert_features,
@@ -84,13 +84,39 @@ class TrainingManager:
                 avg_e2v_weight = total_e2v_weight / total_batches
                 avg_hub_weight = total_hub_weight / total_batches
                 
-                progress_bar.set_postfix({
-                    'loss': f'{(total_loss/(batch_idx+1)):.4f}',
-                    'vad_loss': f'{(total_vad_loss/(batch_idx+1)):.4f}',
-                    'contrast_loss': f'{(total_contrast_loss/(batch_idx+1)):.4f}',
-                    'e2v_w': f'{avg_e2v_weight:.3f}',
-                    'hub_w': f'{avg_hub_weight:.3f}'
-                })
+                # progress_bar.set_postfix({
+                #     'loss': f'{(total_loss/(batch_idx+1)):.4f}',
+                #     'vad_loss': f'{(total_vad_loss/(batch_idx+1)):.4f}',
+                #     'contrast_loss': f'{(total_contrast_loss/(batch_idx+1)):.4f}',
+                #     'e2v_w': f'{avg_e2v_weight:.3f}',
+                #     'hub_w': f'{avg_hub_weight:.3f}'
+                # })
+                            # 获取多粒度和时序门控的权重
+                fusion_weights = None
+                if hasattr(model, 'get_fusion_weights') and callable(model.get_fusion_weights):
+                    fusion_weights = model.get_fusion_weights()
+                
+                if fusion_weights:
+                    # 添加到进度条显示
+                    progress_bar.set_postfix({
+                        'loss': f'{(total_loss/(batch_idx+1)):.4f}',
+                        'vad_loss': f'{(total_vad_loss/(batch_idx+1)):.4f}',
+                        'contrast_loss': f'{(total_contrast_loss/(batch_idx+1)):.4f}',
+                        'e2v_w': f'{avg_e2v_weight:.3f}',
+                        'hub_w': f'{avg_hub_weight:.3f}',
+                        'grain_w': f'{fusion_weights["grain_weight"]:.3f}',
+                        'temp_w': f'{fusion_weights["temporal_weight"]:.3f}'
+                    })
+                else:
+                    # 原有的进度条显示
+                    progress_bar.set_postfix({
+                        'loss': f'{(total_loss/(batch_idx+1)):.4f}',
+                        'vad_loss': f'{(total_vad_loss/(batch_idx+1)):.4f}',
+                        'contrast_loss': f'{(total_contrast_loss/(batch_idx+1)):.4f}',
+                        'e2v_w': f'{avg_e2v_weight:.3f}',
+                        'hub_w': f'{avg_hub_weight:.3f}'
+                    })
+            
                 progress_bar.update(gradient_accumulation_steps)
             
         progress_bar.close()

@@ -1,6 +1,6 @@
 """
 模型定义模块
-定义VAD模型及其配置
+定义VAD模型及其配置，更新支持多粒度和时序敏感的门控机制
 """
 
 import torch
@@ -21,6 +21,9 @@ class VADConfig(PretrainedConfig):
         num_hidden_layers=4,
         num_attention_heads=8,
         hidden_dropout_prob=0.1,
+        use_multi_grained_gating=True,  # 是否使用多粒度门控
+        use_temporal_gating=True,       # 是否使用时序敏感门控
+        num_groups=4,                   # 多粒度门控的分组数量
         **kwargs
     ):
         """
@@ -34,6 +37,9 @@ class VADConfig(PretrainedConfig):
             num_hidden_layers: 隐藏层数量
             num_attention_heads: 注意力头数量
             hidden_dropout_prob: 隐藏层dropout概率
+            use_multi_grained_gating: 是否使用多粒度门控
+            use_temporal_gating: 是否使用时序敏感门控
+            num_groups: 多粒度门控的分组数量
         """
         super().__init__(**kwargs)
         self.emotion2vec_dim = emotion2vec_dim
@@ -43,10 +49,14 @@ class VADConfig(PretrainedConfig):
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
         self.hidden_dropout_prob = hidden_dropout_prob
+        self.use_multi_grained_gating = use_multi_grained_gating
+        self.use_temporal_gating = use_temporal_gating
+        self.num_groups = num_groups
 
 class VADModelWithGating(PreTrainedModel):
     """
     带门控机制的VAD模型
+    支持多粒度和时序敏感的门控机制
     """
     def __init__(self, config):
         """
@@ -61,6 +71,7 @@ class VADModelWithGating(PreTrainedModel):
         self.emotion2vec_dim = config.emotion2vec_dim  # 1024
         self.hubert_dim = config.hubert_dim  # 1024
         
+        # 使用增强版的门控特征融合
         self.feature_fusion = ModelComponents.GatedFeatureFusion(
             emotion2vec_dim=self.emotion2vec_dim,
             hubert_dim=self.hubert_dim
@@ -109,3 +120,15 @@ class VADModelWithGating(PreTrainedModel):
         x = torch.sigmoid(self.output_proj(pooled_features))
         
         return x, gate_weights, pooled_features
+        
+    def get_fusion_weights(self):
+        """
+        获取当前门控融合机制使用的策略权重
+        用于分析模型如何权衡多粒度和时序信息
+        
+        返回:
+            包含权重信息的字典
+        """
+        if hasattr(self.feature_fusion, 'get_fusion_weights'):
+            return self.feature_fusion.get_fusion_weights()
+        return None

@@ -1,6 +1,6 @@
 """
 模型组件模块
-包含各种模型组件的实现
+包含各种模型组件的实现，增强了门控融合机制
 """
 
 import torch
@@ -161,7 +161,8 @@ class ModelComponents:
 
     class GatedFeatureFusion(nn.Module):
         """
-        门控特征融合机制
+        门控特征融合机制 - 增强版
+        集成了多粒度和时序敏感特性
         """
         def __init__(self, emotion2vec_dim, hubert_dim):
             """
@@ -177,21 +178,54 @@ class ModelComponents:
             
             # 特征转换层
             self.emotion2vec_transform = nn.Linear(emotion2vec_dim, emotion2vec_dim)
-            self.hubert_transform = nn.Linear(emotion2vec_dim, emotion2vec_dim)
+            self.hubert_transform = nn.Linear(hubert_dim, emotion2vec_dim)
             
             # LayerNorm层
             self.norm_emotion2vec = nn.LayerNorm(emotion2vec_dim)
             self.norm_hubert = nn.LayerNorm(hubert_dim)
             
-            # 门控网络
-            gate_dim = emotion2vec_dim * 2  # 2048
-            self.gate_net = nn.Sequential(
-                nn.Linear(gate_dim, gate_dim // 2),
+            # 1. 多粒度门控
+            self.num_groups = 4  # 将1024维特征分为4组，每组256维
+            self.group_size = emotion2vec_dim // self.num_groups
+            
+            # 为每组特征创建独立的门控网络
+            self.group_gate_nets = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(self.group_size * 2, self.group_size),
+                    nn.ReLU(),
+                    nn.Linear(self.group_size, 2),
+                    nn.Softmax(dim=-1)
+                ) for _ in range(self.num_groups)
+            ])
+            
+            # 2. 时序敏感门控
+            self.temporal_lstm = nn.LSTM(
+                input_size=emotion2vec_dim * 2,
+                hidden_size=emotion2vec_dim,
+                batch_first=True,
+                bidirectional=True
+            )
+            
+            # 时序门控网络
+            self.temporal_gate_net = nn.Sequential(
+                nn.Linear(emotion2vec_dim * 2, emotion2vec_dim),
                 nn.ReLU(),
-                nn.Linear(gate_dim // 2, 2),
+                nn.Linear(emotion2vec_dim, 2),
                 nn.Softmax(dim=-1)
             )
-        
+            
+            # 原始全局门控网络
+            self.gate_net = nn.Sequential(
+                nn.Linear(emotion2vec_dim * 2, emotion2vec_dim),
+                nn.ReLU(),
+                nn.Linear(emotion2vec_dim, 2),
+                nn.Softmax(dim=-1)
+            )
+            
+            # 融合权重参数 - 控制不同门控策略的权重
+            self.grain_weight = nn.Parameter(torch.tensor(0.5))
+            self.temporal_weight = nn.Parameter(torch.tensor(0.5))
+            
         def forward(self, emotion2vec_feat, hubert_feat):
             """
             前向传播
@@ -203,25 +237,106 @@ class ModelComponents:
             返回:
                 融合后的特征和门控权重
             """
-            # 特征归一化
+            batch_size, seq_len, _ = emotion2vec_feat.shape
+            
+            # 1. 特征归一化
             emotion2vec_feat = self.norm_emotion2vec(emotion2vec_feat)  # [B, T, 1024]
             hubert_feat = self.norm_hubert(hubert_feat)  # [B, T, 1024]
             
-            # 特征转换
+            # 2. 特征转换
             emotion2vec_transformed = self.emotion2vec_transform(emotion2vec_feat)
             hubert_transformed = self.hubert_transform(hubert_feat)
             
-            # 计算门控权重
+            # 3. 多粒度门控融合
+            multi_grained_features = []
+            multi_grained_e_weights = []
+            multi_grained_h_weights = []
+            
+            for i in range(self.num_groups):
+                # 提取当前组的特征
+                start_idx = i * self.group_size
+                end_idx = (i + 1) * self.group_size
+                
+                e_group = emotion2vec_transformed[..., start_idx:end_idx]
+                h_group = hubert_transformed[..., start_idx:end_idx]
+                
+                # 拼接特征并计算门控权重
+                group_concat = torch.cat([e_group, h_group], dim=-1)
+                group_gates = self.group_gate_nets[i](group_concat)
+                
+                # 权重分离并应用
+                e_weight = group_gates[..., 0:1]
+                h_weight = group_gates[..., 1:2]
+                
+                multi_grained_e_weights.append(e_weight)
+                multi_grained_h_weights.append(h_weight)
+                
+                weighted_e = e_group * e_weight
+                weighted_h = h_group * h_weight
+                
+                # 拼接加权后的特征
+                group_feature = torch.cat([weighted_e, weighted_h], dim=-1)
+                multi_grained_features.append(group_feature)
+            
+            # 拼接所有组的特征
+            multi_grained_fusion = torch.cat(multi_grained_features, dim=-1)
+            
+            # 计算多粒度门控的平均权重
+            multi_grained_e_weight = torch.cat(multi_grained_e_weights, dim=-1).mean(dim=-1, keepdim=True)
+            multi_grained_h_weight = torch.cat(multi_grained_h_weights, dim=-1).mean(dim=-1, keepdim=True)
+            
+            # 4. 时序敏感门控
+            # 拼接原始特征用于LSTM处理
+            concat_features = torch.cat([emotion2vec_transformed, hubert_transformed], dim=-1)
+            
+            # 使用LSTM提取时序信息
+            temporal_features, _ = self.temporal_lstm(concat_features)
+            
+            # 基于时序特征计算门控权重
+            temporal_gates = self.temporal_gate_net(temporal_features)
+            temporal_e_weight = temporal_gates[..., 0:1]
+            temporal_h_weight = temporal_gates[..., 1:2]
+            
+            # 加权并拼接
+            temporal_weighted_e = emotion2vec_transformed * temporal_e_weight
+            temporal_weighted_h = hubert_transformed * temporal_h_weight
+            
+            temporal_fusion = torch.cat([temporal_weighted_e, temporal_weighted_h], dim=-1)
+            
+            # 5. 原始全局门控(保持兼容性)
+            # 计算全局门控权重
             concat_feat = torch.cat([emotion2vec_transformed, hubert_transformed], dim=-1)
             gates = self.gate_net(concat_feat)
             
-            # 分离权重和加权融合
-            emotion2vec_weight = gates[..., 0:1]
-            hubert_weight = gates[..., 1:2]
+            # 分离权重
+            global_e_weight = gates[..., 0:1]
+            global_h_weight = gates[..., 1:2]
             
-            weighted_emotion2vec = emotion2vec_transformed * emotion2vec_weight
-            weighted_hubert = hubert_transformed * hubert_weight
+            # 6. 融合不同策略的结果
+            # 归一化融合权重
+            fusion_weights = torch.softmax(torch.stack([self.grain_weight, self.temporal_weight]), dim=0)
+            grain_factor = fusion_weights[0]
+            temporal_factor = fusion_weights[1]
             
-            fused_features = torch.cat([weighted_emotion2vec, weighted_hubert], dim=-1)
+            # 加权组合多粒度和时序敏感的结果
+            fused_features = grain_factor * multi_grained_fusion + temporal_factor * temporal_fusion
             
-            return fused_features, (emotion2vec_weight, hubert_weight)
+            # 计算最终平均门控权重(用于监控)
+            e_weight = grain_factor * multi_grained_e_weight + temporal_factor * temporal_e_weight
+            h_weight = grain_factor * multi_grained_h_weight + temporal_factor * temporal_h_weight
+            
+            return fused_features, (e_weight, h_weight)
+            
+        def get_fusion_weights(self):
+            """
+            获取当前门控融合的权重
+            用于可视化和分析
+            
+            返回:
+                门控融合的粒度和时序权重
+            """
+            weights = torch.softmax(torch.stack([self.grain_weight, self.temporal_weight]), dim=0)
+            return {
+                'grain_weight': weights[0].item(),
+                'temporal_weight': weights[1].item()
+            }
