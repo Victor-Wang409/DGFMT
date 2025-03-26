@@ -87,7 +87,7 @@ def main():
     dataset = EmotionDataset(args.emotion2vec_dir, args.hubert_dir, args.csv_path)
     
     # 基于说话人进行5折交叉验证
-    folds = split_iemocap(dataset.df)
+    folds = split_msppodcast(dataset.df)
     fold_results = []
     
     # 对每个fold进行训练
