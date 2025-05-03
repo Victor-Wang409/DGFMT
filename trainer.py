@@ -57,11 +57,12 @@ class TrainingManager:
                 padding_mask
             )
             vad_loss = criterion(outputs, vad_labels)
-            # 对比损失
+            
+            # 对比损失 - 传递特征和标签索引
             contrast_loss = contrast_criterion(contrast_features, emotion_indices)
 
             # 总损失
-            loss = vad_loss + 0.1 * contrast_loss  # 权重系数可调
+            loss = vad_loss + 0.6 * contrast_loss  # 权重系数可调
             
             # 记录门控权重
             total_e2v_weight += e2v_weight.mean().item()

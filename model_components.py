@@ -161,21 +161,21 @@ class ModelComponents:
 
     class GatedFeatureFusion(nn.Module):
         """
-        门控特征融合机制 - 改进版
+        门控特征融合机制
         将多粒度融合和时序敏感处理改为串行关系
+        支持2-4种不同类型的输入特征
         """
         def __init__(self, emotion2vec_dim, hubert_dim):
             """
             初始化门控特征融合
             
             参数:
-                emotion2vec_dim: emotion2vec特征维度
-                hubert_dim: hubert特征维度
+                feature_dims: 字典，包含各特征类型及其维度，如{'emotion2vec': 1024, 'hubert': 1024}
+                num_groups: 多粒度门控的分组数量
             """
             super().__init__()
             self.emotion2vec_dim = emotion2vec_dim  # 1024
             self.hubert_dim = hubert_dim  # 1024
-            
             # 特征转换层
             self.emotion2vec_transform = nn.Linear(emotion2vec_dim, emotion2vec_dim)
             self.hubert_transform = nn.Linear(hubert_dim, emotion2vec_dim)

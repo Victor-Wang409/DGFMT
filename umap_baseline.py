@@ -262,7 +262,7 @@ def main():
                         help='标注CSV文件路径')
     parser.add_argument('--output_dir', type=str, default='visualization_results',
                         help='保存可视化结果的目录')
-    parser.add_argument('--n_neighbors', type=int, default=15,
+    parser.add_argument('--n_neighbors', type=int, default=30,
                         help='UMAP的n_neighbors参数 (默认: 15)')
     parser.add_argument('--min_dist', type=float, default=0.1,
                         help='UMAP的min_dist参数 (默认: 0.1)')

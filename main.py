@@ -23,16 +23,16 @@ def main():
     parser.add_argument('--hubert_dir', type=str, required=True, help='Directory containing hubert features')
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--epochs', type=int, default=80)
-    parser.add_argument('--lr', type=float, default=2e-5)
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--lr', type=float, default=3e-5)
+    parser.add_argument('--seed', type=int, default=20)
     parser.add_argument('--save_dir', type=str, default='./models')
-    parser.add_argument('--patience', type=int, default=10)
+    parser.add_argument('--patience', type=int, default=15)
     parser.add_argument('--min_delta', type=float, default=0.01)
     
     # 添加梯度累积相关的参数
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=8,
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=16,
                         help='Number of steps to accumulate gradient before performing a backward/update pass')
-    parser.add_argument('--effective_batch_size', type=int, default=32,
+    parser.add_argument('--effective_batch_size', type=int, default=64,
                         help='Effective batch size = batch_size * gradient_accumulation_steps')
 
     parser.add_argument('--warmup_epochs', type=int, default=5,
@@ -42,7 +42,7 @@ def main():
     parser.add_argument('--lr_scheduler', type=str, default='step',
                         choices=['cosine', 'linear', 'step'],
                         help='Type of learning rate scheduler')
-    parser.add_argument('--lr_decay_step', type=int, default=10,
+    parser.add_argument('--lr_decay_step', type=int, default=15,
                         help='Step size for StepLR scheduler')
     parser.add_argument('--lr_decay_rate', type=float, default=0.5, 
                         help='Decay rate for StepLR scheduler')
