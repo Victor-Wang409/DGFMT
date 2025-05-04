@@ -10,14 +10,9 @@ from pathlib import Path
 
 class Wav2Vec2Extractor:
     def __init__(self, model_path):
-        """
-        初始化wav2vec2特征提取器
-        Args:
-            model_path: wav2vec2模型本地路径
-        """
-        # 加载wav2vec2处理器和模型
-        self.processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base", local_files_only=True)
-        self.model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base", local_files_only=True).cuda()
+        """初始化wav2vec2特征提取器"""
+        self.processor = Wav2Vec2Processor.from_pretrained(model_path, local_files_only=True)
+        self.model = Wav2Vec2Model.from_pretrained(model_path, local_files_only=True).cuda()
         self.model.eval()
 
     @torch.no_grad()

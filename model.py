@@ -21,9 +21,11 @@ class VADConfig(PretrainedConfig):
         num_hidden_layers=4,
         num_attention_heads=8,
         hidden_dropout_prob=0.1,
-        use_multi_grained_gating=True,  # 是否使用多粒度门控
-        use_temporal_gating=True,       # 是否使用时序敏感门控
-        num_groups=4,                   # 多粒度门控的分组数量
+        use_multi_grained_gating=True,
+        use_temporal_gating=True,
+        num_groups=8,
+        wavlm_dim=0,         # 新增：wavlm特征维度，0表示不使用
+        whisper_dim=0,       # 新增：whisper特征维度，0表示不使用
         **kwargs
     ):
         """
@@ -40,6 +42,8 @@ class VADConfig(PretrainedConfig):
             use_multi_grained_gating: 是否使用多粒度门控
             use_temporal_gating: 是否使用时序敏感门控
             num_groups: 多粒度门控的分组数量
+            wavlm_dim: wavlm特征维度，0表示不使用
+            whisper_dim: whisper特征维度，0表示不使用
         """
         super().__init__(**kwargs)
         self.emotion2vec_dim = emotion2vec_dim
@@ -52,11 +56,13 @@ class VADConfig(PretrainedConfig):
         self.use_multi_grained_gating = use_multi_grained_gating
         self.use_temporal_gating = use_temporal_gating
         self.num_groups = num_groups
+        self.wavlm_dim = wavlm_dim
+        self.whisper_dim = whisper_dim
 
 class VADModelWithGating(PreTrainedModel):
     """
     带门控机制的VAD模型
-    支持多粒度和时序敏感的门控机制
+    支持多种特征输入的门控机制
     """
     def __init__(self, config):
         """
@@ -68,17 +74,29 @@ class VADModelWithGating(PreTrainedModel):
         super().__init__(config)
         self.config = config
         
-        self.emotion2vec_dim = config.emotion2vec_dim  # 1024
-        self.hubert_dim = config.hubert_dim  # 1024
+        # 确定特征类型和维度
+        feature_dims = {'emotion2vec': config.emotion2vec_dim, 'hubert': config.hubert_dim}
+        
+        # 加入额外特征（如果配置中有）
+        if hasattr(config, 'wavlm_dim') and config.wavlm_dim > 0:
+            feature_dims['wavlm'] = config.wavlm_dim
+        if hasattr(config, 'whisper_dim') and config.whisper_dim > 0:
+            feature_dims['whisper'] = config.whisper_dim
+            
+        self.feature_types = list(feature_dims.keys())
+        self.num_features = len(self.feature_types)
         
         # 使用增强版的门控特征融合
         self.feature_fusion = ModelComponents.GatedFeatureFusion(
-            emotion2vec_dim=self.emotion2vec_dim,
-            hubert_dim=self.hubert_dim
+            feature_dims=feature_dims,
+            num_groups=config.num_groups
         )
         
-        # 修改输入投影层维度，因为融合后的特征维度是 emotion2vec_dim * 2
-        self.input_proj = nn.Linear(self.emotion2vec_dim * 2, config.hidden_dim)
+        # 计算融合后的特征维度
+        fusion_output_dim = config.emotion2vec_dim * self.num_features
+        
+        # 修改输入投影层维度
+        self.input_proj = nn.Linear(fusion_output_dim, config.hidden_dim)
         
         # Transformer编码器层
         self.encoder_layers = nn.ModuleList([
@@ -92,20 +110,19 @@ class VADModelWithGating(PreTrainedModel):
         
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         
-    def forward(self, emotion2vec_features, hubert_features, padding_mask=None):
+    def forward(self, features, padding_mask=None):
         """
         前向传播
         
         参数:
-            emotion2vec_features: emotion2vec特征
-            hubert_features: hubert特征
+            features: 字典，包含各特征类型
             padding_mask: 填充掩码
             
         返回:
             预测结果、门控权重和池化特征
         """
         # 特征融合
-        x, gate_weights = self.feature_fusion(emotion2vec_features, hubert_features)
+        x, gate_weights = self.feature_fusion(features)
         
         # 将融合后的特征映射到hidden_dim
         x = self.input_proj(x)
@@ -124,7 +141,6 @@ class VADModelWithGating(PreTrainedModel):
     def get_fusion_weights(self):
         """
         获取当前门控融合机制使用的策略权重
-        用于分析模型如何权衡多粒度和时序信息
         
         返回:
             包含权重信息的字典

@@ -21,6 +21,9 @@ def main():
     parser = argparse.ArgumentParser(description='Training VAD prediction model')
     parser.add_argument('--emotion2vec_dir', type=str, required=True, help='Directory containing emo2vec features')
     parser.add_argument('--hubert_dir', type=str, required=True, help='Directory containing hubert features')
+    parser.add_argument('--wavlm_dir', type=str, default=None, help='Directory containing wavLM features')
+    parser.add_argument('--whisper_dir', type=str, default=None, help='Directory containing Whisper features')
+
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--epochs', type=int, default=80)
     parser.add_argument('--lr', type=float, default=3e-5)
@@ -84,7 +87,13 @@ def main():
     logging.info(f"Using device: {device}")
     
     # 加载数据集
-    dataset = EmotionDataset(args.emotion2vec_dir, args.hubert_dir, args.csv_path)
+    dataset = EmotionDataset(
+        args.emotion2vec_dir, 
+        args.hubert_dir, 
+        args.csv_path,
+        wavlm_dir=args.wavlm_dir,
+        whisper_dir=args.whisper_dir
+    )
     
     # 基于说话人进行5折交叉验证
     folds = split_msppodcast(dataset.df)

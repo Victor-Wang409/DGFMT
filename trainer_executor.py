@@ -63,7 +63,11 @@ class TrainerExecutor:
             emotion2vec_dim=1024,
             hubert_dim=1024,
             hidden_dim=1024,
-            num_hidden_layers=4
+            num_hidden_layers=4,
+            num_groups=8,
+            # 新增特征维度，默认为0表示不使用
+            wavlm_dim=0,
+            whisper_dim=0
         )
 
         # 创建模型
