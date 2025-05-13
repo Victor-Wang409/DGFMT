@@ -27,11 +27,11 @@ class DataProcessor:
         batch_features["hubert_features"] = []
         
         # 检查其他可能的特征
-        has_wavlm = "wavlm_features" in batch[0]
+        has_wav2vec = "wav2vec_features" in batch[0]
         has_whisper = "whisper_features" in batch[0]
         
-        if has_wavlm:
-            batch_features["wavlm_features"] = []
+        if has_wav2vec:
+            batch_features["wav2vec_features"] = []
         if has_whisper:
             batch_features["whisper_features"] = []
         
@@ -56,10 +56,10 @@ class DataProcessor:
                             torch.zeros(pad_len, item["hubert_features"].shape[1])], dim=0)
                 )
                 
-                if has_wavlm:
-                    batch_features["wavlm_features"].append(
-                        torch.cat([item["wavlm_features"], 
-                                torch.zeros(pad_len, item["wavlm_features"].shape[1])], dim=0)
+                if has_wav2vec:
+                    batch_features["wav2vec_features"].append(
+                        torch.cat([item["wav2vec_features"], 
+                                torch.zeros(pad_len, item["wav2vec_features"].shape[1])], dim=0)
                     )
                     
                 if has_whisper:
@@ -76,8 +76,8 @@ class DataProcessor:
                 batch_features["emotion2vec_features"].append(item["emotion2vec_features"])
                 batch_features["hubert_features"].append(item["hubert_features"])
                 
-                if has_wavlm:
-                    batch_features["wavlm_features"].append(item["wavlm_features"])
+                if has_wav2vec:
+                    batch_features["wav2vec_features"].append(item["wav2vec_features"])
                 if has_whisper:
                     batch_features["whisper_features"].append(item["whisper_features"])
                     

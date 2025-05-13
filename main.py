@@ -21,21 +21,21 @@ def main():
     parser = argparse.ArgumentParser(description='Training VAD prediction model')
     parser.add_argument('--emotion2vec_dir', type=str, required=True, help='Directory containing emo2vec features')
     parser.add_argument('--hubert_dir', type=str, required=True, help='Directory containing hubert features')
-    parser.add_argument('--wavlm_dir', type=str, default=None, help='Directory containing wavLM features')
+    parser.add_argument('--wav2vec_dir', type=str, default=None, help='Directory containing wav2vec features')
     parser.add_argument('--whisper_dir', type=str, default=None, help='Directory containing Whisper features')
 
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--epochs', type=int, default=80)
-    parser.add_argument('--lr', type=float, default=3e-5)
+    parser.add_argument('--lr', type=float, default=2e-5)
     parser.add_argument('--seed', type=int, default=20)
     parser.add_argument('--save_dir', type=str, default='./models')
     parser.add_argument('--patience', type=int, default=15)
     parser.add_argument('--min_delta', type=float, default=0.01)
     
     # 添加梯度累积相关的参数
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=16,
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
                         help='Number of steps to accumulate gradient before performing a backward/update pass')
-    parser.add_argument('--effective_batch_size', type=int, default=64,
+    parser.add_argument('--effective_batch_size', type=int, default=32,
                         help='Effective batch size = batch_size * gradient_accumulation_steps')
 
     parser.add_argument('--warmup_epochs', type=int, default=5,
@@ -91,7 +91,7 @@ def main():
         args.emotion2vec_dir, 
         args.hubert_dir, 
         args.csv_path,
-        wavlm_dir=args.wavlm_dir,
+        wav2vec_dir=args.wav2vec_dir,
         whisper_dir=args.whisper_dir
     )
     

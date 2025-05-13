@@ -13,7 +13,7 @@ class EmotionDataset(torch.utils.data.Dataset):
     """
     情感数据集类，用于加载和处理情感数据
     """
-    def __init__(self, emotion2vec_dir, hubert_dir, csv_path, wavlm_dir=None, whisper_dir=None):
+    def __init__(self, emotion2vec_dir, hubert_dir, csv_path, wav2vec_dir=None, whisper_dir=None):
         """
         初始化数据集
         
@@ -21,13 +21,13 @@ class EmotionDataset(torch.utils.data.Dataset):
             emotion2vec_dir: emotion2vec特征目录
             hubert_dir: hubert特征目录
             csv_path: 标注CSV文件路径
-            wavlm_dir: wavlm特征目录，None表示不使用
+            wav2vec_dir: wav2vec特征目录，None表示不使用
             whisper_dir: whisper特征目录，None表示不使用
         """
         self.df = pd.read_csv(csv_path)
         self.emotion2vec_dir = emotion2vec_dir
         self.hubert_dir = hubert_dir
-        self.wavlm_dir = wavlm_dir
+        self.wav2vec_dir = wav2vec_dir
         self.whisper_dir = whisper_dir
  
         # 将情感标签映射到数值
@@ -82,12 +82,12 @@ class EmotionDataset(torch.utils.data.Dataset):
         hubert_features = torch.from_numpy(np.load(hubert_path)).float()
         
         # 加载其他特征（如果目录存在）
-        wavlm_features = None
+        wav2vec_features = None
         whisper_features = None
         
-        if self.wavlm_dir:
-            wavlm_path = os.path.join(self.wavlm_dir, f"{base_filename}.npy")
-            wavlm_features = torch.from_numpy(np.load(wavlm_path)).float()
+        if self.wav2vec_dir:
+            wav2vec_path = os.path.join(self.wav2vec_dir, f"{base_filename}.npy")
+            wav2vec_features = torch.from_numpy(np.load(wav2vec_path)).float()
             
         if self.whisper_dir:
             whisper_path = os.path.join(self.whisper_dir, f"{base_filename}.npy")
@@ -95,8 +95,8 @@ class EmotionDataset(torch.utils.data.Dataset):
         
         # 使用插值来对齐特征长度
         all_features = [emotion2vec_features, hubert_features]
-        if wavlm_features is not None:
-            all_features.append(wavlm_features)
+        if wav2vec_features is not None:
+            all_features.append(wav2vec_features)
         if whisper_features is not None:
             all_features.append(whisper_features)
         
@@ -121,9 +121,9 @@ class EmotionDataset(torch.utils.data.Dataset):
         }
         
         # 添加其他特征（如果存在）
-        if wavlm_features is not None:
-            result["wavlm_features"] = all_features[2]
+        if wav2vec_features is not None:
+            result["wav2vec_features"] = all_features[2]
         if whisper_features is not None:
-            result["whisper_features"] = all_features[3 if wavlm_features is not None else 2]
+            result["whisper_features"] = all_features[3 if wav2vec_features is not None else 2]
         
         return result

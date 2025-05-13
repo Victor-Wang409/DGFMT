@@ -47,8 +47,8 @@ class TrainingManager:
             }
             
             # 添加其他特征（如果存在）
-            if "wavlm_features" in batch:
-                features["wavlm"] = batch["wavlm_features"].to(device)
+            if "wav2vec_features" in batch:
+                features["wav2vec"] = batch["wav2vec_features"].to(device)
             if "whisper_features" in batch:
                 features["whisper"] = batch["whisper_features"].to(device)
                 
@@ -161,8 +161,8 @@ class TrainingManager:
                 }
                 
                 # 添加其他特征（如果存在）
-                if "wavlm_features" in batch:
-                    features["wavlm"] = batch["wavlm_features"].to(device)
+                if "wav2vec_features" in batch:
+                    features["wav2vec"] = batch["wav2vec_features"].to(device)
                 if "whisper_features" in batch:
                     features["whisper"] = batch["whisper_features"].to(device)
                     
