@@ -5,3 +5,4 @@ hubert_large_features/
 wav2vec_large_features/
 results/
 models/
+.DS_Store
