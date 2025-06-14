@@ -49,8 +49,8 @@ class TrainingManager:
             # 添加其他特征（如果存在）
             if "wav2vec_features" in batch:
                 features["wav2vec"] = batch["wav2vec_features"].to(device)
-            if "whisper_features" in batch:
-                features["whisper"] = batch["whisper_features"].to(device)
+            if "data2vec_features" in batch:
+                features["data2vec"] = batch["data2vec_features"].to(device)
                 
             padding_mask = batch["padding_mask"].to(device)
             vad_labels = batch["labels"].to(device)
@@ -101,8 +101,8 @@ class TrainingManager:
                 # 构建进度条信息
                 postfix_info = {
                     'loss': f'{(total_loss/(batch_idx+1)):.4f}',
-                    'vad_loss': f'{(total_vad_loss/(batch_idx+1)):.4f}',
-                    'contrast_loss': f'{(total_contrast_loss/(batch_idx+1)):.4f}',
+                    # 'vad_loss': f'{(total_vad_loss/(batch_idx+1)):.4f}',
+                    # 'contrast_loss': f'{(total_contrast_loss/(batch_idx+1)):.4f}',
                 }
                 postfix_info.update(avg_weights)
                 
@@ -113,8 +113,8 @@ class TrainingManager:
                 
                 if fusion_weights:
                     postfix_info.update({
-                        'grain_w': f'{fusion_weights["grain_weight"]:.3f}',
-                        'temp_w': f'{fusion_weights["temporal_weight"]:.3f}'
+                        # 'grain_w': f'{fusion_weights["grain_weight"]:.3f}',
+                        # 'temp_w': f'{fusion_weights["temporal_weight"]:.3f}'
                     })
                     
                 progress_bar.set_postfix(postfix_info)
@@ -163,8 +163,8 @@ class TrainingManager:
                 # 添加其他特征（如果存在）
                 if "wav2vec_features" in batch:
                     features["wav2vec"] = batch["wav2vec_features"].to(device)
-                if "whisper_features" in batch:
-                    features["whisper"] = batch["whisper_features"].to(device)
+                if "data2vec_features" in batch:
+                    features["data2vec"] = batch["data2vec_features"].to(device)
                     
                 padding_mask = batch["padding_mask"].to(device)
                 labels = batch["labels"].to(device)

@@ -78,9 +78,9 @@ def plot_umap(features, labels, label_names, output_dir, n_neighbors=15, min_dis
     reducer = umap.UMAP(
         n_neighbors=n_neighbors,
         min_dist=min_dist,
+        # metric='cosine',
         n_components=n_components,
-        metric='cosine',
-        random_state=42
+        random_state=20
     )
     umap_results = reducer.fit_transform(features_preprocessed)
     
@@ -262,14 +262,12 @@ def main():
                         help='标注CSV文件路径')
     parser.add_argument('--output_dir', type=str, default='visualization_results',
                         help='保存可视化结果的目录')
-    parser.add_argument('--n_neighbors', type=int, default=30,
+    parser.add_argument('--n_neighbors', type=int, default=15,
                         help='UMAP的n_neighbors参数 (默认: 15)')
     parser.add_argument('--min_dist', type=float, default=0.1,
                         help='UMAP的min_dist参数 (默认: 0.1)')
     parser.add_argument('--use_cpu', action='store_true', 
                         help='强制使用CPU进行计算（即使有可用的GPU）')
-    parser.add_argument('--sample_size', type=int, default=0,
-                        help='随机采样数量，设置为0则使用全部数据 (默认: 0)')
     
     args = parser.parse_args()
     
@@ -281,11 +279,6 @@ def main():
     
     df = pd.read_csv(args.csv_path)
     print(f"从标注文件加载了 {len(df)} 个样本")
-    
-    # 如果指定了样本大小，则随机采样
-    if args.sample_size > 0 and args.sample_size < len(df):
-        print(f"随机采样 {args.sample_size} 个样本进行可视化")
-        df = df.sample(args.sample_size, random_state=42)
     
     try:
         features, emotions = extract_features(

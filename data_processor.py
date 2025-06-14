@@ -28,12 +28,12 @@ class DataProcessor:
         
         # 检查其他可能的特征
         has_wav2vec = "wav2vec_features" in batch[0]
-        has_whisper = "whisper_features" in batch[0]
+        has_data2vec = "data2vec_features" in batch[0]
         
         if has_wav2vec:
             batch_features["wav2vec_features"] = []
-        if has_whisper:
-            batch_features["whisper_features"] = []
+        if has_data2vec:
+            batch_features["data2vec_features"] = []
         
         batch_padding_masks = []
         batch_ids = []
@@ -62,10 +62,10 @@ class DataProcessor:
                                 torch.zeros(pad_len, item["wav2vec_features"].shape[1])], dim=0)
                     )
                     
-                if has_whisper:
-                    batch_features["whisper_features"].append(
-                        torch.cat([item["whisper_features"], 
-                                torch.zeros(pad_len, item["whisper_features"].shape[1])], dim=0)
+                if has_data2vec:
+                    batch_features["data2vec_features"].append(
+                        torch.cat([item["data2vec_features"], 
+                                torch.zeros(pad_len, item["data2vec_features"].shape[1])], dim=0)
                     )
                     
                 padding_mask = torch.cat([
@@ -78,8 +78,8 @@ class DataProcessor:
                 
                 if has_wav2vec:
                     batch_features["wav2vec_features"].append(item["wav2vec_features"])
-                if has_whisper:
-                    batch_features["whisper_features"].append(item["whisper_features"])
+                if has_data2vec:
+                    batch_features["data2vec_features"].append(item["data2vec_features"])
                     
                 padding_mask = torch.zeros(curr_len)
             

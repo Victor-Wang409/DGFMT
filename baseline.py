@@ -7,7 +7,7 @@ import pandas as pd
 import logging
 import argparse
 import os
-from util import split_msppodcast
+from util import split_iemocap
 from transformers import PretrainedConfig, PreTrainedModel
 
 class EarlyStopping:
@@ -95,7 +95,7 @@ class EmotionDataset(torch.utils.data.Dataset):
 class VADConfig(PretrainedConfig):
     def __init__(
         self,
-        input_dim=768,
+        input_dim=1024,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -205,7 +205,7 @@ def main():
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--epochs', type=int, default=80)
-    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--seed', type=int, default=20)
     parser.add_argument('--save_dir', type=str, default='./models')
     parser.add_argument('--patience', type=int, default=7)
@@ -236,10 +236,10 @@ def main():
     input_dim = sample_feature.shape[1]
     
     # 基于说话人进行5折交叉验证
-    folds = split_msppodcast(dataset.df)
+    folds = split_iemocap(dataset.df)
     fold_results = []
     
-    for fold in range(5):
+    for fold in range(1):
         logging.info(f"\n{'='*50}\nFold {fold+1}/5\n{'='*50}")
         # 创建当前fold的保存目录
         fold_dir = os.path.join(args.save_dir, f'fold{fold+1}')
@@ -306,7 +306,8 @@ def main():
                 # 创建并保存最佳模型
                 best_model_dir = os.path.join(fold_dir, 'best_model')
                 os.makedirs(best_model_dir, exist_ok=True)
-                model.save_pretrained(best_model_dir)
+                model.save_pretrained(best_model_dir, safe_serialization=False)
+                torch.save(optimizer.state_dict(), os.path.join(best_model_dir, 'optimizer.pt'))
                 logging.info(f"Saved new best model with val_ccc={val_ccc_avg:.3f}")
             
             # 保存checkpoint以便恢复训练

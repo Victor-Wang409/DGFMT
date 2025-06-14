@@ -22,7 +22,7 @@ def main():
     parser.add_argument('--emotion2vec_dir', type=str, required=True, help='Directory containing emo2vec features')
     parser.add_argument('--hubert_dir', type=str, required=True, help='Directory containing hubert features')
     parser.add_argument('--wav2vec_dir', type=str, default=None, help='Directory containing wav2vec features')
-    parser.add_argument('--whisper_dir', type=str, default=None, help='Directory containing Whisper features')
+    parser.add_argument('--data2vec_dir', type=str, default=None, help='Directory containing data2vec features')
 
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--epochs', type=int, default=80)
@@ -35,7 +35,7 @@ def main():
     # 添加梯度累积相关的参数
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
                         help='Number of steps to accumulate gradient before performing a backward/update pass')
-    parser.add_argument('--effective_batch_size', type=int, default=32,
+    parser.add_argument('--effective_batch_size', type=int, default=16,
                         help='Effective batch size = batch_size * gradient_accumulation_steps')
 
     parser.add_argument('--warmup_epochs', type=int, default=5,
@@ -92,11 +92,11 @@ def main():
         args.hubert_dir, 
         args.csv_path,
         wav2vec_dir=args.wav2vec_dir,
-        whisper_dir=args.whisper_dir
+        data2vec_dir=args.data2vec_dir
     )
     
     # 基于说话人进行5折交叉验证
-    folds = split_msppodcast(dataset.df)
+    folds = split_iemocap(dataset.df)
     fold_results = []
     
     # 对每个fold进行训练

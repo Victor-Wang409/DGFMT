@@ -25,7 +25,7 @@ class VADConfig(PretrainedConfig):
         use_temporal_gating=True,
         num_groups=8,
         wav2vec_dim=1024,         # 新增：wav2vec特征维度，0表示不使用
-        whisper_dim=0,       # 新增：whisper特征维度，0表示不使用
+        data2vec_dim=1024,       # 新增：data2vec特征维度，0表示不使用
         **kwargs
     ):
         """
@@ -43,7 +43,7 @@ class VADConfig(PretrainedConfig):
             use_temporal_gating: 是否使用时序敏感门控
             num_groups: 多粒度门控的分组数量
             wav2vec_dim: wav2vec特征维度，0表示不使用
-            whisper_dim: whisper特征维度，0表示不使用
+            data2vec_dim: data2vec特征维度，0表示不使用
         """
         super().__init__(**kwargs)
         self.emotion2vec_dim = emotion2vec_dim
@@ -57,7 +57,7 @@ class VADConfig(PretrainedConfig):
         self.use_temporal_gating = use_temporal_gating
         self.num_groups = num_groups
         self.wav2vec_dim = wav2vec_dim
-        self.whisper_dim = whisper_dim
+        self.data2vec_dim = data2vec_dim
 
 class VADModelWithGating(PreTrainedModel):
     """
@@ -80,8 +80,8 @@ class VADModelWithGating(PreTrainedModel):
         # 加入额外特征（如果配置中有）
         if hasattr(config, 'wav2vec_dim') and config.wav2vec_dim > 0:
             feature_dims['wav2vec'] = config.wav2vec_dim
-        if hasattr(config, 'whisper_dim') and config.whisper_dim > 0:
-            feature_dims['whisper'] = config.whisper_dim
+        if hasattr(config, 'data2vec_dim') and config.data2vec_dim > 0:
+            feature_dims['data2vec'] = config.data2vec_dim
             
         self.feature_types = list(feature_dims.keys())
         self.num_features = len(self.feature_types)

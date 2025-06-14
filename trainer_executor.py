@@ -66,8 +66,8 @@ class TrainerExecutor:
             num_hidden_layers=4,
             num_groups=8,
             # 新增特征维度，默认为0表示不使用
-            wavlm_dim=1024,
-            whisper_dim=0
+            wav2vec_dim=1024,
+            whisper_dim=1024
         )
 
         # 创建模型
