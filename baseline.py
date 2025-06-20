@@ -7,6 +7,7 @@ import pandas as pd
 import logging
 import argparse
 import os
+from util import split_iemocap
 from transformers import PretrainedConfig, PreTrainedModel
 
 class EarlyStopping:
@@ -94,7 +95,7 @@ class EmotionDataset(torch.utils.data.Dataset):
 class VADConfig(PretrainedConfig):
     def __init__(
         self,
-        input_dim=768,
+        input_dim=1024,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -147,46 +148,6 @@ class CCCLoss(nn.Module):
         mean_ccc = (ccc_v + ccc_a + ccc_d) / 3.0
         return torch.tensor(1.0, device=preds.device) - mean_ccc
 
-def split_by_iemocap(df):
-    """基于说话人ID划分数据集为5折"""
-    # 从文件名中提取session信息(格式如Ses01F_impro01_F000)
-    df['session'] = df['FileName'].apply(lambda x: x[:5])  # 提取Ses01这样的前缀
-    sessions = sorted(df['session'].unique())  # 获取所有session ['Ses01', 'Ses02', ...]
-    # 确保正好有5个session
-    assert len(sessions) == 5, f"预期5个session,但找到{len(sessions)}个session"
-    # 用于存储5折的结果
-    folds = []
-    # 为每个session创建一折
-    for test_session in sessions:
-        # 获取当前session的所有样本索引作为测试集
-        test_idx = df[df['session'] == test_session].index.values
-        # 获取其他session的样本索引
-        other_sessions_idx = df[df['session'] != test_session].index.values
-        # 随机打乱其他session的索引
-        np.random.shuffle(other_sessions_idx)
-        # 计算验证集大小(其他session样本总数的20%)
-        eval_size = int(len(other_sessions_idx) * 0.2)
-        # 划分验证集和训练集
-        eval_idx = other_sessions_idx[:eval_size]
-        train_idx = other_sessions_idx[eval_size:]
-        # 将当前折的划分结果存储在字典中
-        fold_info = {
-            'train_idx': train_idx,
-            'eval_idx': eval_idx,
-            'test_idx': test_idx
-        }
-        folds.append(fold_info)
-        # 打印当前折的详细信息
-        print(f"\nFold for test session {test_session}:")
-        print(f"Training set: {len(train_idx)} samples")
-        print(f"Validation set: {len(eval_idx)} samples")
-        print(f"Test set: {len(test_idx)} samples")
-        # 打印每个集合中包含的session
-        train_sessions = sorted(df.iloc[train_idx]['session'].unique())
-        eval_sessions = sorted(df.iloc[eval_idx]['session'].unique())
-        test_sessions = sorted(df.iloc[test_idx]['session'].unique())
-    
-    return folds
 
 def train_one_epoch(model, optimizer, criterion, train_loader, device):
     model.train()
@@ -244,7 +205,7 @@ def main():
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--epochs', type=int, default=80)
-    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--seed', type=int, default=20)
     parser.add_argument('--save_dir', type=str, default='./models')
     parser.add_argument('--patience', type=int, default=7)
@@ -275,10 +236,10 @@ def main():
     input_dim = sample_feature.shape[1]
     
     # 基于说话人进行5折交叉验证
-    folds = split_by_iemocap(dataset.df)
+    folds = split_iemocap(dataset.df)
     fold_results = []
     
-    for fold in range(5):
+    for fold in range(1):
         logging.info(f"\n{'='*50}\nFold {fold+1}/5\n{'='*50}")
         # 创建当前fold的保存目录
         fold_dir = os.path.join(args.save_dir, f'fold{fold+1}')
@@ -322,7 +283,7 @@ def main():
             os.makedirs(epoch_dir, exist_ok=True)
             
             # 保存模型和配置
-            model.save_pretrained(epoch_dir)
+            model.save_pretrained(epoch_dir, safe_serialization=False)
             
             # 保存优化器状态
             torch.save(optimizer.state_dict(), os.path.join(epoch_dir, 'optimizer.pt'))
@@ -345,7 +306,8 @@ def main():
                 # 创建并保存最佳模型
                 best_model_dir = os.path.join(fold_dir, 'best_model')
                 os.makedirs(best_model_dir, exist_ok=True)
-                model.save_pretrained(best_model_dir)
+                model.save_pretrained(best_model_dir, safe_serialization=False)
+                torch.save(optimizer.state_dict(), os.path.join(best_model_dir, 'optimizer.pt'))
                 logging.info(f"Saved new best model with val_ccc={val_ccc_avg:.3f}")
             
             # 保存checkpoint以便恢复训练

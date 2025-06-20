@@ -1,6 +1,6 @@
 """
 模型组件模块
-包含各种模型组件的实现
+包含各种模型组件的实现，增强了门控融合机制
 """
 
 import torch
@@ -162,66 +162,137 @@ class ModelComponents:
     class GatedFeatureFusion(nn.Module):
         """
         门控特征融合机制
+        将多粒度融合和时序敏感处理改为串行关系
+        支持2-4种不同类型的输入特征
         """
-        def __init__(self, emotion2vec_dim, hubert_dim):
+        def __init__(self, feature_dims, num_groups=8):
             """
             初始化门控特征融合
             
             参数:
-                emotion2vec_dim: emotion2vec特征维度
-                hubert_dim: hubert特征维度
+                feature_dims: 字典，包含各特征类型及其维度，如{'emotion2vec': 1024, 'hubert': 1024}
+                num_groups: 多粒度门控的分组数量
             """
             super().__init__()
-            self.emotion2vec_dim = emotion2vec_dim  # 1024
-            self.hubert_dim = hubert_dim  # 1024
+            self.feature_types = list(feature_dims.keys())
+            self.feature_dims = feature_dims
+            self.num_features = len(self.feature_types)
             
-            # 特征转换层
-            self.emotion2vec_transform = nn.Linear(emotion2vec_dim, emotion2vec_dim)
-            self.hubert_transform = nn.Linear(emotion2vec_dim, emotion2vec_dim)
+            # 验证特征数量满足要求
+            assert 2 <= self.num_features <= 4, f"特征数量必须在2-4之间，当前为{self.num_features}"
             
-            # LayerNorm层
-            self.norm_emotion2vec = nn.LayerNorm(emotion2vec_dim)
-            self.norm_hubert = nn.LayerNorm(hubert_dim)
+            # 特征变换和归一化
+            self.feature_transforms = nn.ModuleDict()
+            self.feature_norms = nn.ModuleDict()
             
-            # 门控网络
-            gate_dim = emotion2vec_dim * 2  # 2048
-            self.gate_net = nn.Sequential(
-                nn.Linear(gate_dim, gate_dim // 2),
-                nn.ReLU(),
-                nn.Linear(gate_dim // 2, 2),
-                nn.Softmax(dim=-1)
+            # 使用第一个特征的维度作为标准维度
+            self.standard_dim = list(feature_dims.values())[0]
+            
+            # 为每种特征创建转换层和归一化层
+            for feat_type, dim in feature_dims.items():
+                self.feature_transforms[feat_type] = nn.Linear(dim, self.standard_dim)
+                self.feature_norms[feat_type] = nn.LayerNorm(dim)
+            
+            # 多粒度门控
+            self.num_groups = num_groups
+            self.group_size = self.standard_dim // self.num_groups
+            
+            # 为每组特征创建独立的门控网络
+            self.group_gate_nets = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(self.group_size * self.num_features, self.group_size),
+                    nn.ReLU(),
+                    nn.Linear(self.group_size, self.num_features),
+                    nn.Softmax(dim=-1)
+                ) for _ in range(self.num_groups)
+            ])
+            
+            # 时序处理LSTM
+            # 输入维度是多粒度融合后的特征维度
+            self.temporal_lstm = nn.LSTM(
+                input_size=self.standard_dim * self.num_features,
+                hidden_size=self.standard_dim,
+                batch_first=True,
+                bidirectional=True
             )
-        
-        def forward(self, emotion2vec_feat, hubert_feat):
+            
+            # 最终的融合层
+            self.final_projection = nn.Linear(self.standard_dim * 2, self.standard_dim * self.num_features)
+            
+        def forward(self, features):
             """
             前向传播
             
             参数:
-                emotion2vec_feat: emotion2vec特征
-                hubert_feat: hubert特征
+                features: 字典，包含各类型特征，如{'emotion2vec': tensor, 'hubert': tensor}
                 
             返回:
                 融合后的特征和门控权重
             """
-            # 特征归一化
-            emotion2vec_feat = self.norm_emotion2vec(emotion2vec_feat)  # [B, T, 1024]
-            hubert_feat = self.norm_hubert(hubert_feat)  # [B, T, 1024]
+            batch_size, seq_len, _ = features[self.feature_types[0]].shape
             
-            # 特征转换
-            emotion2vec_transformed = self.emotion2vec_transform(emotion2vec_feat)
-            hubert_transformed = self.hubert_transform(hubert_feat)
+            # 1. 特征归一化和转换
+            transformed_features = {}
+            for feat_type in self.feature_types:
+                normalized = self.feature_norms[feat_type](features[feat_type])
+                transformed = self.feature_transforms[feat_type](normalized)
+                transformed_features[feat_type] = transformed
             
-            # 计算门控权重
-            concat_feat = torch.cat([emotion2vec_transformed, hubert_transformed], dim=-1)
-            gates = self.gate_net(concat_feat)
+            # 2. 多粒度门控融合
+            multi_grained_features = []
+            gate_weights = {feat_type: [] for feat_type in self.feature_types}
             
-            # 分离权重和加权融合
-            emotion2vec_weight = gates[..., 0:1]
-            hubert_weight = gates[..., 1:2]
+            for i in range(self.num_groups):
+                # 提取当前组的所有特征
+                start_idx = i * self.group_size
+                end_idx = (i + 1) * self.group_size
+                
+                group_feats = []
+                for feat_type in self.feature_types:
+                    group_feats.append(transformed_features[feat_type][..., start_idx:end_idx])
+                
+                # 拼接特征并计算门控权重
+                group_concat = torch.cat(group_feats, dim=-1)
+                group_gates = self.group_gate_nets[i](group_concat)  # [batch, seq_len, num_features]
+                
+                # 加权特征
+                weighted_feats = []
+                for j, feat_type in enumerate(self.feature_types):
+                    weight = group_gates[..., j:j+1]
+                    gate_weights[feat_type].append(weight)
+                    weighted_feat = group_feats[j] * weight
+                    weighted_feats.append(weighted_feat)
+                
+                # 拼接加权后的特征
+                group_feature = torch.cat(weighted_feats, dim=-1)
+                multi_grained_features.append(group_feature)
             
-            weighted_emotion2vec = emotion2vec_transformed * emotion2vec_weight
-            weighted_hubert = hubert_transformed * hubert_weight
+            # 拼接所有组的特征
+            multi_grained_fusion = torch.cat(multi_grained_features, dim=-1)
             
-            fused_features = torch.cat([weighted_emotion2vec, weighted_hubert], dim=-1)
+            # 计算各特征的平均权重（用于监控）
+            avg_weights = {}
+            for feat_type in self.feature_types:
+                avg_weights[feat_type] = torch.cat(gate_weights[feat_type], dim=-1).mean(dim=-1, keepdim=True)
             
-            return fused_features, (emotion2vec_weight, hubert_weight)
+            # 3. 时序处理
+            temporal_features, _ = self.temporal_lstm(multi_grained_fusion)
+            
+            # 4. 最终投影
+            fused_features = self.final_projection(temporal_features)
+            
+            return fused_features, avg_weights
+            
+        def get_fusion_weights(self):
+            """
+            获取当前门控融合机制使用的策略权重
+            
+            返回:
+                包含权重信息的字典
+            """
+            # 这里可以返回多粒度和时序处理的相关权重
+            # 实际中可能需要通过注册hook等方式获取
+            return {
+                "grain_weight": 0.5,  # 示例值
+                "temporal_weight": 0.5
+            }

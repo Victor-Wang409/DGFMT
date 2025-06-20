@@ -31,8 +31,7 @@ class TrainingManager:
         model.train()
         total_loss = 0.0
         total_batches = 0
-        total_e2v_weight = 0.0
-        total_hub_weight = 0.0
+        total_weights = {}  # 存储各特征的权重
         total_vad_loss = 0.0
         total_contrast_loss = 0.0
         
@@ -41,31 +40,43 @@ class TrainingManager:
         progress_bar = tqdm(total=len(train_loader), desc='Training', leave=False)
         
         for batch_idx, batch in enumerate(train_loader):
-            emotion2vec_features = batch["emotion2vec_features"].to(device)
-            hubert_features = batch["hubert_features"].to(device)
+            # 准备特征字典
+            features = {
+                "emotion2vec": batch["emotion2vec_features"].to(device),
+                "hubert": batch["hubert_features"].to(device)
+            }
+            
+            # 添加其他特征（如果存在）
+            if "wav2vec_features" in batch:
+                features["wav2vec"] = batch["wav2vec_features"].to(device)
+            if "data2vec_features" in batch:
+                features["data2vec"] = batch["data2vec_features"].to(device)
+                
             padding_mask = batch["padding_mask"].to(device)
             vad_labels = batch["labels"].to(device)
             emotion_labels = batch["emotion_labels"].to(device)
-
+            
             # 获取标签索引,用于对比学习
             emotion_indices = torch.argmax(emotion_labels, dim=1)
             
-            # 前向传播,增加对比学习特征
-            outputs, (e2v_weight, hub_weight), contrast_features = model(
-                emotion2vec_features,
-                hubert_features,
+            # 前向传播
+            outputs, feature_weights, contrast_features = model(
+                features,
                 padding_mask
             )
             vad_loss = criterion(outputs, vad_labels)
-            # 对比损失
+            
+            # 对比损失 - 传递特征和标签索引
             contrast_loss = contrast_criterion(contrast_features, emotion_indices)
-
+            
             # 总损失
-            loss = vad_loss + 0.1 * contrast_loss  # 权重系数可调
+            loss = vad_loss + 0.6 * contrast_loss  # 权重系数可调
             
             # 记录门控权重
-            total_e2v_weight += e2v_weight.mean().item()
-            total_hub_weight += hub_weight.mean().item()
+            for feat_type, weight in feature_weights.items():
+                if feat_type not in total_weights:
+                    total_weights[feat_type] = 0.0
+                total_weights[feat_type] += weight.mean().item()
             
             # 梯度累积
             loss = loss / gradient_accumulation_steps
@@ -81,28 +92,48 @@ class TrainingManager:
                 optimizer.zero_grad()
                 torch.cuda.empty_cache()  # 清理显存
                 
-                avg_e2v_weight = total_e2v_weight / total_batches
-                avg_hub_weight = total_hub_weight / total_batches
+                # 计算平均权重
+                avg_weights = {
+                    f"{k}_w": f"{total_weights[k] / total_batches:.3f}"
+                    for k in total_weights
+                }
                 
-                progress_bar.set_postfix({
+                # 构建进度条信息
+                postfix_info = {
                     'loss': f'{(total_loss/(batch_idx+1)):.4f}',
-                    'vad_loss': f'{(total_vad_loss/(batch_idx+1)):.4f}',
-                    'contrast_loss': f'{(total_contrast_loss/(batch_idx+1)):.4f}',
-                    'e2v_w': f'{avg_e2v_weight:.3f}',
-                    'hub_w': f'{avg_hub_weight:.3f}'
-                })
+                    # 'vad_loss': f'{(total_vad_loss/(batch_idx+1)):.4f}',
+                    # 'contrast_loss': f'{(total_contrast_loss/(batch_idx+1)):.4f}',
+                }
+                postfix_info.update(avg_weights)
+                
+                # 获取多粒度和时序门控的权重
+                fusion_weights = None
+                if hasattr(model, 'get_fusion_weights') and callable(model.get_fusion_weights):
+                    fusion_weights = model.get_fusion_weights()
+                
+                if fusion_weights:
+                    postfix_info.update({
+                        # 'grain_w': f'{fusion_weights["grain_weight"]:.3f}',
+                        # 'temp_w': f'{fusion_weights["temporal_weight"]:.3f}'
+                    })
+                    
+                progress_bar.set_postfix(postfix_info)
                 progress_bar.update(gradient_accumulation_steps)
-            
+        
         progress_bar.close()
         
         # 返回平均损失和平均门控权重
-        return {
+        result = {
             'loss': total_loss / len(train_loader),
             'vad_loss': total_vad_loss / len(train_loader),
             'contrast_loss': total_contrast_loss / len(train_loader),
-            'e2v_weight': total_e2v_weight / total_batches,
-            'hub_weight': total_hub_weight / total_batches
         }
+    
+        # 添加各特征的平均权重
+        for feat_type in total_weights:
+            result[f'{feat_type}_weight'] = total_weights[feat_type] / total_batches
+        
+        return result
 
     @staticmethod
     def validate_and_test(model, data_loader, device):
@@ -123,14 +154,23 @@ class TrainingManager:
         
         with torch.no_grad():
             for batch in tqdm(data_loader, desc='Evaluating', leave=False):
-                # 获取分离的特征
-                emotion2vec_features = batch["emotion2vec_features"].to(device)
-                hubert_features = batch["hubert_features"].to(device)
+                # 准备特征字典
+                features = {
+                    "emotion2vec": batch["emotion2vec_features"].to(device),
+                    "hubert": batch["hubert_features"].to(device)
+                }
+                
+                # 添加其他特征（如果存在）
+                if "wav2vec_features" in batch:
+                    features["wav2vec"] = batch["wav2vec_features"].to(device)
+                if "data2vec_features" in batch:
+                    features["data2vec"] = batch["data2vec_features"].to(device)
+                    
                 padding_mask = batch["padding_mask"].to(device)
                 labels = batch["labels"].to(device)
                 
-                # 前向传播 (注意接收门控权重但不使用)
-                outputs, _, _ = model(emotion2vec_features, hubert_features, padding_mask)
+                # 前向传播
+                outputs, _, _ = model(features, padding_mask)
                 
                 all_preds.append(outputs)
                 all_labels.append(labels)

@@ -8,12 +8,15 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 import umap  # 导入UMAP库
+
+# 导入模型定义
 from model import (
     VADConfig,
     VADModelWithGating
 )
 
 def interpolate_features(features, target_len):
+    """插值函数，用于对齐特征长度"""
     if features.shape[0] == target_len:
         return features
         
@@ -28,45 +31,140 @@ def interpolate_features(features, target_len):
     
     return features
 
-def extract_pooled_features(emotion2vec_features, hubert_features, model, device):
+def extract_pooled_features(features_dict, model, device):
+    """
+    提取模型的池化特征
+    
+    参数:
+        features_dict: 特征字典，包含各种特征类型
+        model: VAD模型
+        device: 设备
+        
+    返回:
+        池化后的特征表示
+    """
     model.eval()
     with torch.no_grad():
         try:
             # 限制序列长度以减少内存使用
             max_seq_len = 500  # 根据实际情况调整
-            if emotion2vec_features.shape[0] > max_seq_len:
-                emotion2vec_features = emotion2vec_features[:max_seq_len]
-                hubert_features = hubert_features[:max_seq_len]
             
-            emotion2vec_features = torch.from_numpy(emotion2vec_features).float().unsqueeze(0).to(device)
-            hubert_features = torch.from_numpy(hubert_features).float().unsqueeze(0).to(device)
-            padding_mask = torch.zeros(1, emotion2vec_features.size(1)).bool().to(device)
+            # 准备特征字典，转换为tensor并移动到设备
+            processed_features = {}
+            min_len = float('inf')
             
-            _, _, pooled_features = model(emotion2vec_features, hubert_features, padding_mask)
+            # 首先找到最短的序列长度
+            for feat_type, feat_data in features_dict.items():
+                if feat_data.shape[0] < min_len:
+                    min_len = feat_data.shape[0]
+            
+            # 限制最大长度
+            target_len = min(min_len, max_seq_len)
+            
+            # 处理每种特征
+            for feat_type, feat_data in features_dict.items():
+                if feat_data.shape[0] > target_len:
+                    feat_data = feat_data[:target_len]
+                
+                processed_features[feat_type] = torch.from_numpy(feat_data).float().unsqueeze(0).to(device)
+            
+            # 创建padding mask
+            padding_mask = torch.zeros(1, target_len).bool().to(device)
+            
+            # 前向传播获取池化特征
+            _, _, pooled_features = model(processed_features, padding_mask)
             result = pooled_features[0].cpu().numpy()
             
             # 立即释放GPU内存
-            del emotion2vec_features, hubert_features, padding_mask, pooled_features
+            for feat_tensor in processed_features.values():
+                del feat_tensor
+            del padding_mask, pooled_features
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
                 
             return result
+            
         except RuntimeError as e:
             print(f"运行时错误，尝试在CPU上进行计算: {e}")
             # 如果GPU内存不足，回退到CPU
             device_cpu = torch.device("cpu")
             model = model.to(device_cpu)
             
-            emotion2vec_features = torch.from_numpy(emotion2vec_features).float().unsqueeze(0)
-            hubert_features = torch.from_numpy(hubert_features).float().unsqueeze(0)
-            padding_mask = torch.zeros(1, emotion2vec_features.size(1)).bool()
+            # 重新处理特征
+            processed_features = {}
+            for feat_type, feat_data in features_dict.items():
+                processed_features[feat_type] = torch.from_numpy(feat_data).float().unsqueeze(0)
             
-            _, _, pooled_features = model(emotion2vec_features, hubert_features, padding_mask)
+            padding_mask = torch.zeros(1, target_len).bool()
+            
+            _, _, pooled_features = model(processed_features, padding_mask)
             return pooled_features[0].numpy()
+
+def load_model_from_checkpoint(model_path, device):
+    """
+    从检查点加载模型
+    
+    参数:
+        model_path: 模型文件路径
+        device: 设备
+        
+    返回:
+        加载的模型
+    """
+    try:
+        # 尝试加载PyTorch模型文件
+        if model_path.endswith('.bin') or model_path.endswith('.pt'):
+            # 检查是否是Hugging Face格式的模型
+            model_dir = os.path.dirname(model_path)
+            config_path = os.path.join(model_dir, 'config.json')
             
-            # 注意: 这里不将模型移回GPU，因为这会在下一个样本时自动处理
+            if os.path.exists(config_path):
+                # 使用Hugging Face格式加载
+                model = VADModelWithGating.from_pretrained(model_dir)
+            else:
+                # 使用默认配置创建模型
+                print("未找到config.json，使用默认配置创建模型...")
+                config = VADConfig(
+                    emotion2vec_dim=1024,
+                    hubert_dim=1024,
+                    hidden_dim=1024,
+                    num_hidden_layers=4
+                )
+                model = VADModelWithGating(config)
+                
+                # 加载模型权重
+                model.load_state_dict(torch.load(model_path, map_location=device))
+        else:
+            raise ValueError(f"不支持的模型文件格式: {model_path}")
+            
+        model = model.to(device)
+        model.eval()
+        return model
+        
+    except Exception as e:
+        print(f"加载模型失败: {e}")
+        print("尝试使用默认配置...")
+        
+        # 使用默认配置创建模型
+        config = VADConfig(
+            emotion2vec_dim=1024,
+            hubert_dim=1024,
+            hidden_dim=1024,
+            num_hidden_layers=4
+        )
+        model = VADModelWithGating(config).to(device)
+        
+        # 再次尝试加载模型状态
+        try:
+            state_dict = torch.load(model_path, map_location=device, weights_only=True)
+            model.load_state_dict(state_dict)
+            return model
+        except Exception as e2:
+            print(f"第二次尝试加载模型失败: {e2}")
+            raise RuntimeError("无法加载模型，请检查模型路径和格式")
 
 def preprocess_features(features):
+    """标准化特征"""
     scaler = StandardScaler()
     features_scaled = scaler.fit_transform(features)
     return features_scaled
@@ -92,7 +190,7 @@ def plot_umap(features, labels, label_names, output_dir, n_neighbors=15, min_dis
         n_neighbors=n_neighbors,
         min_dist=min_dist,
         n_components=n_components,
-        metric='cosine',
+        # metric='cosine',
         random_state=42
     )
     umap_results = reducer.fit_transform(features_preprocessed)
@@ -138,7 +236,6 @@ def plot_umap(features, labels, label_names, output_dir, n_neighbors=15, min_dis
                 linewidth=0.5
             )
     
-    # plt.title('UMAP 情感特征可视化', fontsize=15)
     plt.legend(
         loc='upper center',
         bbox_to_anchor=(0.5, 1.10),
@@ -160,26 +257,24 @@ def plot_umap(features, labels, label_names, output_dir, n_neighbors=15, min_dis
     print(f"可视化图像已保存至: {os.path.join(output_dir, 'umap_visualization.png')}")
     plt.close()
 
-def extract_features(model_path, emotion2vec_dir, hubert_dir, df, device):
-    config = VADConfig(
-        emotion2vec_dim=1024,
-        hubert_dim=1024,
-        hidden_dim=1024,
-        num_hidden_layers=4
-    )
+def extract_features(model_path, emotion2vec_dir, hubert_dir, df, device, wav2vec_dir=None, data2vec_dir=None):
+    """
+    提取特征
     
-    # 尝试使用CPU，如果GPU内存不足
-    try:
-        model = VADModelWithGating(config).to(device)
-        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-    except RuntimeError as e:
-        print(f"GPU内存不足，切换到CPU: {e}")
-        device = torch.device("cpu")
-        model = VADModelWithGating(config).to(device)
-        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-    
-    model.load_state_dict(checkpoint)
-    model.eval()
+    参数:
+        model_path: 模型路径
+        emotion2vec_dir: emotion2vec特征目录
+        hubert_dir: hubert特征目录
+        df: 数据DataFrame
+        device: 设备
+        wav2vec_dir: wav2vec特征目录（可选）
+        data2vec_dir: data2vec特征目录（可选）
+        
+    返回:
+        特征数组和标签列表
+    """
+    # 加载模型
+    model = load_model_from_checkpoint(model_path, device)
     
     all_features = []
     all_emotions = []
@@ -197,17 +292,41 @@ def extract_features(model_path, emotion2vec_dir, hubert_dir, df, device):
             base_filename = Path(filename).stem
             
             try:
+                # 加载必需的特征
                 emotion2vec_path = os.path.join(emotion2vec_dir, f"{base_filename}.npy")
                 hubert_path = os.path.join(hubert_dir, f"{base_filename}.npy")
                 
                 emotion2vec_features = np.load(emotion2vec_path)
                 hubert_features = np.load(hubert_path)
                 
+                # 对齐特征长度
                 target_len = max(emotion2vec_features.shape[0], hubert_features.shape[0])
                 emotion2vec_features = interpolate_features(emotion2vec_features, target_len)
                 hubert_features = interpolate_features(hubert_features, target_len)
                 
-                pooled_features = extract_pooled_features(emotion2vec_features, hubert_features, model, device)
+                # 构建特征字典
+                features_dict = {
+                    'emotion2vec': emotion2vec_features,
+                    'hubert': hubert_features
+                }
+                
+                # 加载其他特征（如果目录存在）
+                if wav2vec_dir:
+                    wav2vec_path = os.path.join(wav2vec_dir, f"{base_filename}.npy")
+                    if os.path.exists(wav2vec_path):
+                        wav2vec_features = np.load(wav2vec_path)
+                        wav2vec_features = interpolate_features(wav2vec_features, target_len)
+                        features_dict['wav2vec'] = wav2vec_features
+                
+                if data2vec_dir:
+                    data2vec_path = os.path.join(data2vec_dir, f"{base_filename}.npy")
+                    if os.path.exists(data2vec_path):
+                        data2vec_features = np.load(data2vec_path)
+                        data2vec_features = interpolate_features(data2vec_features, target_len)
+                        features_dict['data2vec'] = data2vec_features
+                
+                # 提取池化特征
+                pooled_features = extract_pooled_features(features_dict, model, device)
                 
                 all_features.append(pooled_features)
                 all_emotions.append(row['Label'])
@@ -233,8 +352,12 @@ def main():
                         help='emotion2vec特征目录')
     parser.add_argument('--hubert_dir', type=str, required=True,
                         help='hubert特征目录')
+    parser.add_argument('--wav2vec_dir', type=str, default=None,
+                        help='wav2vec特征目录（可选）')
+    parser.add_argument('--data2vec_dir', type=str, default=None,
+                        help='data2vec特征目录（可选）')
     parser.add_argument('--model_path', type=str, required=True,
-                        help='模型检查点文件路径 (.pt)')
+                        help='模型检查点文件路径 (.pt或.bin)')
     parser.add_argument('--csv_path', type=str, required=True,
                         help='标注CSV文件路径')
     parser.add_argument('--output_dir', type=str, default='visualization_results',
@@ -245,8 +368,6 @@ def main():
                         help='UMAP的min_dist参数 (默认: 0.1)')
     parser.add_argument('--use_cpu', action='store_true', 
                         help='强制使用CPU进行计算（即使有可用的GPU）')
-    parser.add_argument('--sample_size', type=int, default=0,
-                        help='随机采样数量，设置为0则使用全部数据 (默认: 0)')
     
     args = parser.parse_args()
     
@@ -259,18 +380,15 @@ def main():
     df = pd.read_csv(args.csv_path)
     print(f"从标注文件加载了 {len(df)} 个样本")
     
-    # 如果指定了样本大小，则随机采样
-    if args.sample_size > 0 and args.sample_size < len(df):
-        print(f"随机采样 {args.sample_size} 个样本进行可视化")
-        df = df.sample(args.sample_size, random_state=42)
-    
     try:
         features, emotions = extract_features(
             args.model_path,
             args.emotion2vec_dir,
             args.hubert_dir,
             df,
-            device
+            device,
+            args.wav2vec_dir,
+            args.data2vec_dir
         )
     except Exception as e:
         print(f"提取特征时出错: {e}")
@@ -281,7 +399,9 @@ def main():
             args.emotion2vec_dir,
             args.hubert_dir,
             df,
-            device
+            device,
+            args.wav2vec_dir,
+            args.data2vec_dir
         )
     
     print(f"提取的特征形状: {features.shape}")
@@ -289,13 +409,14 @@ def main():
     
     # 英文标签名称 - 确保这些与你的实际标签匹配
     label_names = {
-        'N': 'Neutral',
-        'F': 'Happy',
-        'W': 'Angry', 
-        'T': 'Sad',
-        'L': "Boredom",
-        'E': "Disgust",
-        'A': "Anxiety/Fear"
+        'neu': 'Neutral',
+        'hap': 'Happy',
+        'ang': 'Angry',
+        'sad': 'Sad',
+        'sur': 'Surprise',
+        'fea': 'Fear',
+        'dis': 'Disgust',
+        'con': 'Contempt'
     }
     
     plot_umap(

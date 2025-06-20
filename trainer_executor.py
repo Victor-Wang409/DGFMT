@@ -63,7 +63,11 @@ class TrainerExecutor:
             emotion2vec_dim=1024,
             hubert_dim=1024,
             hidden_dim=1024,
-            num_hidden_layers=4
+            num_hidden_layers=4,
+            num_groups=8,
+            # 新增特征维度，默认为0表示不使用
+            wav2vec_dim=1024,
+            whisper_dim=1024
         )
 
         # 创建模型
@@ -109,8 +113,8 @@ class TrainerExecutor:
             current_lr = scheduler.get_last_lr()[0]
             logging.info(f"Epoch {epoch+1}")
             logging.info(f"Current learning rate: {current_lr:.2e}")
-            logging.info(f"Average emotion2vec weight: {metrics['e2v_weight']:.3f}")
-            logging.info(f"Average hubert weight: {metrics['hub_weight']:.3f}")
+            # logging.info(f"Average emotion2vec weight: {metrics['e2v_weight']:.3f}")
+            # logging.info(f"Average hubert weight: {metrics['hub_weight']:.3f}")
             
             # 验证
             val_v, val_a, val_d = TrainingManager.validate_and_test(model, eval_loader, device)

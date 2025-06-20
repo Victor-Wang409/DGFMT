@@ -13,7 +13,7 @@ class LossFactory:
     """
     class SupervisedContrastiveLoss(nn.Module):
         """
-        监督对比损失，使同类样本在特征空间中更接近
+        监督对比损失，按照论文伪代码实现
         """
         def __init__(self, temperature=0.07):
             """
@@ -27,11 +27,11 @@ class LossFactory:
             
         def forward(self, features, labels):
             """
-            计算对比损失
+            计算对比损失，使用论文中的算法实现
             
             参数:
-                features: 特征表示
-                labels: 标签
+                features: 特征表示 [batch_size, feature_dim]
+                labels: 标签索引 [batch_size]
                 
             返回:
                 对比损失值
@@ -39,34 +39,42 @@ class LossFactory:
             # 添加数值稳定性检查
             if torch.isnan(features).any() or torch.isinf(features).any():
                 return torch.tensor(0.0, device=features.device, requires_grad=True)
-                
-            batch_size = features.shape[0]
-            labels = labels.contiguous().view(-1, 1)
-            mask = torch.eq(labels, labels.T).float()
-            mask = mask.fill_diagonal_(0)
             
-            # 特征归一化,添加eps避免除零
+            batch_size = features.shape[0]
+            
+            # 特征归一化
             features = F.normalize(features, dim=1, eps=1e-8)
             
-            # 计算相似度矩阵时添加数值稳定性
-            similarity_matrix = torch.clamp(
-                torch.matmul(features, features.T),
-                min=-1.0,
-                max=1.0
-            )
+            # 计算内积得到相似度矩阵 (类似于伪代码中的einsum操作)
+            similarity_matrix = torch.matmul(features, features.T)
+            similarity_matrix = torch.clamp(similarity_matrix, min=-1.0, max=1.0)
             
+            # 应用温度缩放并计算log_softmax (对应伪代码中的LogSoftmax(l_pn/τ))
             logits = similarity_matrix / self.temperature
+            log_probs = F.log_softmax(logits, dim=1)
             
-            # 使用log_softmax提高数值稳定性
-            log_prob = F.log_softmax(logits, dim=1)
+            # 构建索引矩阵，用于gather操作
+            # 为每个样本创建同类样本的索引列表
+            L_cl = []
+            for i in range(batch_size):
+                # 找出与当前样本i同类的所有样本索引
+                same_class_indices = torch.where(labels == labels[i])[0]
+                # 排除自身
+                same_class_indices = same_class_indices[same_class_indices != i]
+                L_cl.append(same_class_indices)
             
-            # 计算正样本的loss
-            positives = mask * log_prob
+            # 计算损失
+            loss = torch.tensor(0.0, device=features.device)
+            for i in range(batch_size):
+                if len(L_cl[i]) > 0:  # 确保有同类样本
+                    # 从log_probs中收集同类样本的概率值 (对应伪代码中的gather操作)
+                    pos_logits = log_probs[i, L_cl[i]]
+                    # 计算平均损失 (对应伪代码中的除以T)
+                    sample_loss = -torch.mean(pos_logits)
+                    loss += sample_loss
             
-            # 平均每个样本的loss
-            loss = -positives.sum(dim=1) / (mask.sum(dim=1) + 1e-8)
-            
-            return loss.mean()
+            # 对batch中的所有样本取平均
+            return loss / batch_size if batch_size > 0 else loss
 
     class CCCLoss(nn.Module):
         """

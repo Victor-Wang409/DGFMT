@@ -13,7 +13,7 @@ class EmotionDataset(torch.utils.data.Dataset):
     """
     情感数据集类，用于加载和处理情感数据
     """
-    def __init__(self, emotion2vec_dir, hubert_dir, csv_path):
+    def __init__(self, emotion2vec_dir, hubert_dir, csv_path, wav2vec_dir=None, data2vec_dir=None):
         """
         初始化数据集
         
@@ -21,10 +21,14 @@ class EmotionDataset(torch.utils.data.Dataset):
             emotion2vec_dir: emotion2vec特征目录
             hubert_dir: hubert特征目录
             csv_path: 标注CSV文件路径
+            wav2vec_dir: wav2vec特征目录，None表示不使用
+            data2vec_dir: data2vec特征目录，None表示不使用
         """
         self.df = pd.read_csv(csv_path)
         self.emotion2vec_dir = emotion2vec_dir
         self.hubert_dir = hubert_dir
+        self.wav2vec_dir = wav2vec_dir
+        self.data2vec_dir = data2vec_dir
  
         # 将情感标签映射到数值
         self.emotion_map = {
@@ -70,36 +74,56 @@ class EmotionDataset(torch.utils.data.Dataset):
         row = self.df.iloc[idx]
         base_filename = os.path.splitext(row['FileName'])[0]
         
-        # 加载两种特征
+        # 加载必需的两种特征
         emotion2vec_path = os.path.join(self.emotion2vec_dir, f"{base_filename}.npy")
         hubert_path = os.path.join(self.hubert_dir, f"{base_filename}.npy")
         
         emotion2vec_features = torch.from_numpy(np.load(emotion2vec_path)).float()
         hubert_features = torch.from_numpy(np.load(hubert_path)).float()
         
-        # 使用插值来对齐特征长度
-        target_len = max(emotion2vec_features.size(0), hubert_features.size(0))
+        # 加载其他特征（如果目录存在）
+        wav2vec_features = None
+        data2vec_features = None
         
-        if emotion2vec_features.size(0) != target_len:
-            emotion2vec_features = F.interpolate(
-                emotion2vec_features.unsqueeze(0).unsqueeze(0),
-                size=target_len,
-                mode='linear',
-                align_corners=False
-            ).squeeze(0).squeeze(0)
+        if self.wav2vec_dir:
+            wav2vec_path = os.path.join(self.wav2vec_dir, f"{base_filename}.npy")
+            wav2vec_features = torch.from_numpy(np.load(wav2vec_path)).float()
             
-        if hubert_features.size(0) != target_len:
-            hubert_features = F.interpolate(
-                hubert_features.unsqueeze(0).unsqueeze(0),
-                size=target_len,
-                mode='linear',
-                align_corners=False
-            ).squeeze(0).squeeze(0)
+        if self.data2vec_dir:
+            data2vec_path = os.path.join(self.data2vec_dir, f"{base_filename}.npy")
+            data2vec_features = torch.from_numpy(np.load(data2vec_path)).float()
         
-        return {
+        # 使用插值来对齐特征长度
+        all_features = [emotion2vec_features, hubert_features]
+        if wav2vec_features is not None:
+            all_features.append(wav2vec_features)
+        if data2vec_features is not None:
+            all_features.append(data2vec_features)
+        
+        target_len = max([feat.size(0) for feat in all_features])
+        
+        # 调整所有特征到相同长度
+        for i in range(len(all_features)):
+            if all_features[i].size(0) != target_len:
+                all_features[i] = F.interpolate(
+                    all_features[i].unsqueeze(0).unsqueeze(0),
+                    size=target_len,
+                    mode='linear',
+                    align_corners=False
+                ).squeeze(0).squeeze(0)
+        
+        result = {
             "id": row['FileName'],
-            "emotion2vec_features": emotion2vec_features,
-            "hubert_features": hubert_features,
+            "emotion2vec_features": all_features[0],
+            "hubert_features": all_features[1],
             "labels": self.vad_labels[idx],
             "emotion_labels": self.emotion_labels[idx]
         }
+        
+        # 添加其他特征（如果存在）
+        if wav2vec_features is not None:
+            result["wav2vec_features"] = all_features[2]
+        if data2vec_features is not None:
+            result["data2vec_features"] = all_features[3 if wav2vec_features is not None else 2]
+        
+        return result
