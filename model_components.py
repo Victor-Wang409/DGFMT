@@ -5,6 +5,7 @@
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 class ModelComponents:
     """
@@ -165,18 +166,20 @@ class ModelComponents:
         将多粒度融合和时序敏感处理改为串行关系
         支持2-4种不同类型的输入特征
         """
-        def __init__(self, feature_dims, num_groups=8):
+        def __init__(self, feature_dims, num_groups=8, dropout_rate=0.1):
             """
             初始化门控特征融合
             
             参数:
                 feature_dims: 字典，包含各特征类型及其维度，如{'emotion2vec': 1024, 'hubert': 1024}
                 num_groups: 多粒度门控的分组数量
+                dropout_rate: dropout比例
             """
             super().__init__()
             self.feature_types = list(feature_dims.keys())
             self.feature_dims = feature_dims
             self.num_features = len(self.feature_types)
+            self.dropout_rate = dropout_rate
             
             # 验证特征数量满足要求
             assert 2 <= self.num_features <= 4, f"特征数量必须在2-4之间，当前为{self.num_features}"
@@ -190,34 +193,71 @@ class ModelComponents:
             
             # 为每种特征创建转换层和归一化层
             for feat_type, dim in feature_dims.items():
-                self.feature_transforms[feat_type] = nn.Linear(dim, self.standard_dim)
+                # 添加dropout提高泛化能力
+                self.feature_transforms[feat_type] = nn.Sequential(
+                    nn.Linear(dim, self.standard_dim),
+                    nn.Dropout(dropout_rate)
+                )
                 self.feature_norms[feat_type] = nn.LayerNorm(dim)
             
             # 多粒度门控
             self.num_groups = num_groups
             self.group_size = self.standard_dim // self.num_groups
             
-            # 为每组特征创建独立的门控网络
+            # 为每组特征创建独立的门控网络，添加残差连接和改进激活
             self.group_gate_nets = nn.ModuleList([
                 nn.Sequential(
                     nn.Linear(self.group_size * self.num_features, self.group_size),
-                    nn.ReLU(),
+                    nn.LayerNorm(self.group_size),  # 添加层归一化
+                    nn.GELU(),  # 使用GELU替代ReLU
+                    nn.Dropout(dropout_rate),
                     nn.Linear(self.group_size, self.num_features),
-                    nn.Softmax(dim=-1)
                 ) for _ in range(self.num_groups)
             ])
             
-            # 时序处理LSTM
-            # 输入维度是多粒度融合后的特征维度
+            # 时序处理LSTM，添加dropout和更好的初始化
             self.temporal_lstm = nn.LSTM(
                 input_size=self.standard_dim * self.num_features,
                 hidden_size=self.standard_dim,
                 batch_first=True,
-                bidirectional=True
+                bidirectional=True,
+                dropout=dropout_rate if dropout_rate > 0 else 0,
+                num_layers=1
             )
             
-            # 最终的融合层
-            self.final_projection = nn.Linear(self.standard_dim * 2, self.standard_dim * self.num_features)
+            # 添加残差连接的投影层
+            self.residual_proj = nn.Linear(self.standard_dim * self.num_features, self.standard_dim * 2)
+            
+            # 最终的融合层，添加层归一化
+            self.final_norm = nn.LayerNorm(self.standard_dim * 2)
+            self.final_projection = nn.Sequential(
+                nn.Linear(self.standard_dim * 2, self.standard_dim * self.num_features),
+                nn.Dropout(dropout_rate)
+            )
+            
+            # 初始化权重
+            self._init_weights()
+            
+        def _init_weights(self):
+            """改进的权重初始化"""
+            for module in self.modules():
+                if isinstance(module, nn.Linear):
+                    # 使用Xavier初始化
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+                elif isinstance(module, nn.LSTM):
+                    # LSTM权重初始化
+                    for name, param in module.named_parameters():
+                        if 'weight_ih' in name:
+                            nn.init.xavier_uniform_(param.data)
+                        elif 'weight_hh' in name:
+                            nn.init.orthogonal_(param.data)
+                        elif 'bias' in name:
+                            nn.init.zeros_(param.data)
+                            # 设置遗忘门偏置为1
+                            n = param.size(0)
+                            param.data[n//4:n//2].fill_(1.)
             
         def forward(self, features):
             """
@@ -253,7 +293,16 @@ class ModelComponents:
                 
                 # 拼接特征并计算门控权重
                 group_concat = torch.cat(group_feats, dim=-1)
-                group_gates = self.group_gate_nets[i](group_concat)  # [batch, seq_len, num_features]
+                group_logits = self.group_gate_nets[i](group_concat)
+                
+                # 使用温度缩放的softmax提高数值稳定性
+                temperature = 0.1
+                group_gates = F.softmax(group_logits / temperature, dim=-1)
+                
+                # 添加噪声防止过度自信
+                if self.training:
+                    noise = torch.randn_like(group_gates) * 0.01
+                    group_gates = F.softmax((group_logits + noise) / temperature, dim=-1)
                 
                 # 加权特征
                 weighted_feats = []
@@ -275,10 +324,21 @@ class ModelComponents:
             for feat_type in self.feature_types:
                 avg_weights[feat_type] = torch.cat(gate_weights[feat_type], dim=-1).mean(dim=-1, keepdim=True)
             
-            # 3. 时序处理
+            # 3. 时序处理 - 添加残差连接
+            # 为LSTM输入创建残差连接
+            residual_input = self.residual_proj(multi_grained_fusion)
+            
+            # 梯度裁剪
+            if self.training:
+                torch.nn.utils.clip_grad_norm_(self.temporal_lstm.parameters(), max_norm=1.0)
+            
             temporal_features, _ = self.temporal_lstm(multi_grained_fusion)
             
+            # 添加残差连接
+            temporal_features = temporal_features + residual_input
+            
             # 4. 最终投影
+            temporal_features = self.final_norm(temporal_features)
             fused_features = self.final_projection(temporal_features)
             
             return fused_features, avg_weights
