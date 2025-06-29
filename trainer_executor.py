@@ -78,7 +78,7 @@ class TrainerExecutor:
         # 学习率调度器
         scheduler = LRSchedulerFactory.create_scheduler(optimizer, args, num_training_steps)
         criterion = LossFactory.CCCLoss()
-        contrast_criterion = LossFactory.SupervisedContrastiveLoss(temperature=0.07)
+        contrast_criterion = LossFactory.SupervisedContrastiveLoss(temperature=0.1)
         early_stopping = EarlyStopping(patience=args.patience, min_delta=args.min_delta)
         
         best_val_ccc = -float('inf')

@@ -13,9 +13,9 @@ class LossFactory:
     """
     class SupervisedContrastiveLoss(nn.Module):
         """
-        监督对比损失，按照论文伪代码实现
+        监督对比损失
         """
-        def __init__(self, temperature=0.07):
+        def __init__(self, temperature=0.1):
             """
             初始化对比损失
             
