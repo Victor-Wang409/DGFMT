@@ -222,7 +222,7 @@ class ModelComponents:
                 batch_first=True,
                 bidirectional=True,
                 dropout=dropout_rate if dropout_rate > 0 else 0,
-                num_layers=1
+                num_layers=3
             )
             
             # 添加残差连接的投影层
