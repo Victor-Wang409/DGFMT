@@ -32,8 +32,8 @@ task:
 
 model:
   _name: data2vec_multi
-  embed_dim: 768
-  num_heads: 12
+  embed_dim: 1024
+  num_heads: 8
   encoder_dropout: 0.1
   attention_dropout: 0.1
   dropout_input: 0.0
