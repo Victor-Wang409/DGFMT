@@ -42,7 +42,7 @@ def main():
                         help='Number of epochs for learning rate warmup')
     parser.add_argument('--min_lr', type=float, default=1e-6,
                         help='Minimum learning rate') 
-    parser.add_argument('--lr_scheduler', type=str, default='step',
+    parser.add_argument('--lr_scheduler', type=str, default='cosine',
                         choices=['cosine', 'linear', 'step'],
                         help='Type of learning rate scheduler')
     parser.add_argument('--lr_decay_step', type=int, default=15,
@@ -96,7 +96,7 @@ def main():
     )
     
     # 基于说话人进行5折交叉验证
-    folds = split_msppodcast(dataset.df)
+    folds = split_iemocap(dataset.df)
     fold_results = []
     
     # 对每个fold进行训练

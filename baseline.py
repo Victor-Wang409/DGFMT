@@ -7,11 +7,11 @@ import pandas as pd
 import logging
 import argparse
 import os
-from util import split_iemocap
+from util import split_msppodcast
 from transformers import PretrainedConfig, PreTrainedModel
 
 class EarlyStopping:
-    def __init__(self, patience=7, min_delta=0):
+    def __init__(self, patience=20, min_delta=0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -205,10 +205,10 @@ def main():
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--epochs', type=int, default=80)
-    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--lr', type=float, default=2e-5)
     parser.add_argument('--seed', type=int, default=20)
     parser.add_argument('--save_dir', type=str, default='./models')
-    parser.add_argument('--patience', type=int, default=7)
+    parser.add_argument('--patience', type=int, default=20)
     parser.add_argument('--min_delta', type=float, default=0.01)
     
     args = parser.parse_args()
@@ -236,7 +236,7 @@ def main():
     input_dim = sample_feature.shape[1]
     
     # 基于说话人进行5折交叉验证
-    folds = split_iemocap(dataset.df)
+    folds = split_msppodcast(dataset.df)
     fold_results = []
     
     for fold in range(1):
