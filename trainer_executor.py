@@ -67,7 +67,7 @@ class TrainerExecutor:
             num_groups=8,
             # 新增特征维度，默认为0表示不使用
             wav2vec_dim=1024,
-            whisper_dim=1024
+            data2vec_dim=1024
         )
 
         # 创建模型
