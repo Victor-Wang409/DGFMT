@@ -24,8 +24,8 @@ class VADConfig(PretrainedConfig):
         use_multi_grained_gating=True,
         use_temporal_gating=True,
         num_groups=8,
-        wav2vec_dim=1024,         # 新增：wav2vec特征维度，0表示不使用
-        data2vec_dim=1024,       # 新增：data2vec特征维度，0表示不使用
+        wav2vec_dim=0,         # 新增：wav2vec特征维度，0表示不使用
+        data2vec_dim=0,       # 新增：data2vec特征维度，0表示不使用
         **kwargs
     ):
         """

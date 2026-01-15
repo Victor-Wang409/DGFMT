@@ -26,8 +26,8 @@ def main():
 
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--epochs', type=int, default=80)
-    parser.add_argument('--lr', type=float, default=2e-5)
-    parser.add_argument('--seed', type=int, default=20)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='./models')
     parser.add_argument('--patience', type=int, default=15)
     parser.add_argument('--min_delta', type=float, default=0.01)
@@ -35,7 +35,7 @@ def main():
     # 添加梯度累积相关的参数
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
                         help='Number of steps to accumulate gradient before performing a backward/update pass')
-    parser.add_argument('--effective_batch_size', type=int, default=8,
+    parser.add_argument('--effective_batch_size', type=int, default=16,
                         help='Effective batch size = batch_size * gradient_accumulation_steps')
 
     parser.add_argument('--warmup_epochs', type=int, default=5,
@@ -96,7 +96,7 @@ def main():
     )
     
     # 基于说话人进行5折交叉验证
-    folds = split_iemocap(dataset.df)
+    folds = split_msppodcast(dataset.df)
     fold_results = []
     
     # 对每个fold进行训练

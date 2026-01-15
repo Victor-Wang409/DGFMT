@@ -45,26 +45,26 @@ def split_msppodcast(df):
     """基于Split_Set列直接划分数据集为训练、验证和测试集"""
     # 根据Split_Set列获取索引
     train_idx = df[df['Split_Set'] == 'Train'].index.values
-    eval_idx = df[df['Split_Set'] == 'Validation'].index.values
-    test_idx = df[df['Split_Set'] == 'Test'].index.values
+    eval_idx = df[df['Split_Set'] == 'Development'].index.values
+    test_idx = df[df['Split_Set'] == 'Test1'].index.values
     
     # 获取每个集合中唯一的说话人数量
     train_speakers = df[df['Split_Set'] == 'Train']['SpkrID'].nunique()
-    eval_speakers = df[df['Split_Set'] == 'Validation']['SpkrID'].nunique()
-    test_speakers = df[df['Split_Set'] == 'Test']['SpkrID'].nunique()
+    eval_speakers = df[df['Split_Set'] == 'Development']['SpkrID'].nunique()
+    test_speakers = df[df['Split_Set'] == 'Test1']['SpkrID'].nunique()
     
     # 打印详细统计信息
     print("\nDataset Split Statistics:")
     print(f"Training set: {len(train_idx)} samples ({train_speakers} speakers)")
-    print(f"Validation set: {len(eval_idx)} samples ({eval_speakers} speakers)")
-    print(f"Test set: {len(test_idx)} samples ({test_speakers} speakers)")
+    print(f"Development set: {len(eval_idx)} samples ({eval_speakers} speakers)")
+    print(f"Test1 set: {len(test_idx)} samples ({test_speakers} speakers)")
     
     # 计算实际的比例
     total_samples = len(train_idx) + len(eval_idx) + len(test_idx)
     print(f"\nActual split ratio:")
     print(f"Train: {len(train_idx)/total_samples:.1%}")
-    print(f"Val: {len(eval_idx)/total_samples:.1%}")
-    print(f"Test: {len(test_idx)/total_samples:.1%}")
+    print(f"Development: {len(eval_idx)/total_samples:.1%}")
+    print(f"Test1: {len(test_idx)/total_samples:.1%}")
     
     return [{
         'train_idx': train_idx,

@@ -51,7 +51,7 @@ class TrainingManager:
                 features["wav2vec"] = batch["wav2vec_features"].to(device)
             if "data2vec_features" in batch:
                 features["data2vec"] = batch["data2vec_features"].to(device)
-                
+                VADConfig
             padding_mask = batch["padding_mask"].to(device)
             vad_labels = batch["labels"].to(device)
             emotion_labels = batch["emotion_labels"].to(device)
