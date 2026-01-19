@@ -4,8 +4,8 @@ from pathlib import Path
 import time
 
 # ================= 配置区域 =================
-directory = Path("/home/wangchenhao/Github/Audios")
-output_dir = "/home/wangchenhao/Github/DGFMT/Features/emo2vec_large_features"
+directory = Path("/home/skywingsir/DataSet/Audios")
+output_dir = "/home/skywingsir/Github/DGFMT/Features/emo2vec_large_features"
 progress_log_file = "processed_files.txt"
 
 # 关键设置：

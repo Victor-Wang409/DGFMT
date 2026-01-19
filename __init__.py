@@ -24,3 +24,5 @@ __all__ = [
     'TrainingManager',
     'TrainerExecutor'
 ]
+
+__version__ = "0.1.0"
