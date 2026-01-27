@@ -34,6 +34,10 @@ class TrainerExecutor:
             eval_idx: 验证集索引
             test_idx: 测试集索引
             device: 设备
+
+        参数修改:
+            criterion -> vad_criterion (CCC Loss)
+            新增 -> cls_criterion (CrossEntropy Loss)
             
         返回:
             测试结果
@@ -77,7 +81,7 @@ class TrainerExecutor:
         
         # 学习率调度器
         scheduler = LRSchedulerFactory.create_scheduler(optimizer, args, num_training_steps)
-        criterion = LossFactory.CCCLoss()
+        vad_criterion = LossFactory.CCCLoss()
         contrast_criterion = LossFactory.SupervisedContrastiveLoss(temperature=0.1)
         early_stopping = EarlyStopping(patience=args.patience, min_delta=args.min_delta)
         
@@ -94,11 +98,10 @@ class TrainerExecutor:
             metrics = TrainingManager.train_one_epoch(
                 model, 
                 optimizer, 
-                criterion, 
+                vad_criterion,
                 contrast_criterion, 
                 train_loader, 
-                device, 
-                args.gradient_accumulation_steps
+                device
             )
             train_loss = metrics['loss']
             

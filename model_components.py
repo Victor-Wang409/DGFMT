@@ -166,7 +166,7 @@ class ModelComponents:
         将多粒度融合和时序敏感处理改为串行关系
         支持2-4种不同类型的输入特征
         """
-        def __init__(self, feature_dims, num_groups=8, dropout_rate=0.1):
+        def __init__(self, feature_dims, num_groups=16, dropout_rate=0.1):
             """
             初始化门控特征融合
             
@@ -180,6 +180,9 @@ class ModelComponents:
             self.feature_dims = feature_dims
             self.num_features = len(self.feature_types)
             self.dropout_rate = dropout_rate
+            self.temperature = nn.Parameter(torch.tensor(0.1))  # 可学习的温度系数
+            # 初始化权重
+            self._init_weights()
             
             # 验证特征数量满足要求
             assert 2 <= self.num_features <= 4, f"特征数量必须在2-4之间，当前为{self.num_features}"
@@ -221,8 +224,7 @@ class ModelComponents:
                 hidden_size=self.standard_dim,
                 batch_first=True,
                 bidirectional=True,
-                dropout=dropout_rate if dropout_rate > 0 else 0,
-                num_layers=3
+                num_layers=1
             )
             
             # 添加残差连接的投影层
@@ -230,10 +232,6 @@ class ModelComponents:
             
             # 最终的融合层，添加层归一化
             self.final_norm = nn.LayerNorm(self.standard_dim * 2)
-            self.final_projection = nn.Sequential(
-                nn.Linear(self.standard_dim * 2, self.standard_dim * self.num_features),
-                nn.Dropout(dropout_rate)
-            )
             
             # 初始化权重
             self._init_weights()
@@ -281,6 +279,10 @@ class ModelComponents:
             # 2. 多粒度门控融合
             multi_grained_features = []
             gate_weights = {feat_type: [] for feat_type in self.feature_types}
+
+            # 【修改点 2】: 获取限制范围后的温度值 (防止 <= 0 导致除零错误)
+            # 限制最小值为 0.001
+            current_temp = torch.clamp(self.temperature, min=1e-3)
             
             for i in range(self.num_groups):
                 # 提取当前组的所有特征
@@ -296,13 +298,21 @@ class ModelComponents:
                 group_logits = self.group_gate_nets[i](group_concat)
                 
                 # 使用温度缩放的softmax提高数值稳定性
-                temperature = 0.1
-                group_gates = F.softmax(group_logits / temperature, dim=-1)
+                # temperature = 0.1
+                # group_gates = F.softmax(group_logits / temperature, dim=-1)
+                group_gates = F.softmax(group_logits / current_temp, dim=-1)
                 
-                # 添加噪声防止过度自信
-                if self.training:
-                    noise = torch.randn_like(group_gates) * 0.01
-                    group_gates = F.softmax((group_logits + noise) / temperature, dim=-1)
+                # # 添加噪声防止过度自信
+                # if self.training:
+                #     noise = torch.randn_like(group_gates) * 0.01
+                #     group_gates = F.softmax((group_logits + noise) / temperature, dim=-1)
+
+                # if self.training:
+                #     # 噪声注入也使用当前温度
+                #     noise = torch.randn_like(group_logits) * 0.01
+                #     group_gates = F.softmax((group_logits + noise) / current_temp, dim=-1)
+                # else:
+                #     group_gates = F.softmax(group_logits / current_temp, dim=-1)
                 
                 # 加权特征
                 weighted_feats = []
@@ -325,7 +335,6 @@ class ModelComponents:
                 avg_weights[feat_type] = torch.cat(gate_weights[feat_type], dim=-1).mean(dim=-1, keepdim=True)
             
             # 3. 时序处理 - 添加残差连接
-            # 为LSTM输入创建残差连接
             residual_input = self.residual_proj(multi_grained_fusion)
             
             # 梯度裁剪
@@ -338,10 +347,9 @@ class ModelComponents:
             temporal_features = temporal_features + residual_input
             
             # 4. 最终投影
-            temporal_features = self.final_norm(temporal_features)
-            fused_features = self.final_projection(temporal_features)
+            fused_features = self.final_norm(temporal_features)
             
-            return fused_features, avg_weights
+            return fused_features, avg_weights, current_temp
             
         def get_fusion_weights(self):
             """

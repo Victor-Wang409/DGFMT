@@ -23,7 +23,7 @@ def main():
     parser.add_argument('--hubert_dir', type=str, required=True, help='Directory containing hubert features')
     parser.add_argument('--wav2vec_dir', type=str, default=None, help='Directory containing wav2vec features')
     parser.add_argument('--data2vec_dir', type=str, default=None, help='Directory containing data2vec features')
-
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size for training')
     parser.add_argument('--csv_path', type=str, required=True)
     parser.add_argument('--epochs', type=int, default=80)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -31,35 +31,14 @@ def main():
     parser.add_argument('--save_dir', type=str, default='./models')
     parser.add_argument('--patience', type=int, default=15)
     parser.add_argument('--min_delta', type=float, default=0.01)
-    
-    # 添加梯度累积相关的参数
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
-                        help='Number of steps to accumulate gradient before performing a backward/update pass')
-    parser.add_argument('--effective_batch_size', type=int, default=16,
-                        help='Effective batch size = batch_size * gradient_accumulation_steps')
 
-    parser.add_argument('--warmup_epochs', type=int, default=5,
-                        help='Number of epochs for learning rate warmup')
-    parser.add_argument('--min_lr', type=float, default=1e-6,
-                        help='Minimum learning rate') 
-    parser.add_argument('--lr_scheduler', type=str, default='cosine',
-                        choices=['cosine', 'linear', 'step'],
-                        help='Type of learning rate scheduler')
-    parser.add_argument('--lr_decay_step', type=int, default=15,
-                        help='Step size for StepLR scheduler')
-    parser.add_argument('--lr_decay_rate', type=float, default=0.5, 
-                        help='Decay rate for StepLR scheduler')
+    parser.add_argument('--warmup_epochs', type=int, default=5, help='Number of epochs for learning rate warmup')
+    parser.add_argument('--min_lr', type=float, default=1e-6, help='Minimum learning rate') 
+    parser.add_argument('--lr_scheduler', type=str, default='step', choices=['cosine', 'linear', 'step'], help='Type of learning rate scheduler')
+    parser.add_argument('--lr_decay_step', type=int, default=15, help='Step size for StepLR scheduler')
+    parser.add_argument('--lr_decay_rate', type=float, default=0.5, help='Decay rate for StepLR scheduler')
     
     args = parser.parse_args()
-
-    # 根据effective_batch_size计算实际的batch_size
-    args.batch_size = args.effective_batch_size // args.gradient_accumulation_steps
-    if args.effective_batch_size % args.gradient_accumulation_steps != 0:
-        logging.warning(
-            f"Effective batch size {args.effective_batch_size} is not divisible by "
-            f"gradient_accumulation_steps {args.gradient_accumulation_steps}. "
-            f"Using actual batch size of {args.batch_size * args.gradient_accumulation_steps}"
-        )
     
     # 设置随机种子
     torch.manual_seed(args.seed)
@@ -79,8 +58,6 @@ def main():
     )
 
     logging.info(f"Actual batch size: {args.batch_size}")
-    logging.info(f"Gradient accumulation steps: {args.gradient_accumulation_steps}")
-    logging.info(f"Effective batch size: {args.batch_size * args.gradient_accumulation_steps}")
     
     # 设置设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -133,6 +110,10 @@ def main():
     std_v = np.std([res[0] for res in fold_results])
     std_a = np.std([res[1] for res in fold_results])
     std_d = np.std([res[2] for res in fold_results])
+
+    # [修改 2] 结果统计增加 Accuracy
+    avg_acc = np.mean([res[3] for res in fold_results]) # 假设 res 返回 4 个值
+    std_acc = np.std([res[3] for res in fold_results])
     
     final_results = (
         f"Final Cross-Validation Results\n"
@@ -140,7 +121,8 @@ def main():
         f"Valence: {avg_v:.3f} ± {std_v:.3f}\n"
         f"Arousal: {avg_a:.3f} ± {std_a:.3f}\n"
         f"Dominance: {avg_d:.3f} ± {std_d:.3f}\n"
-        f"Overall: {avg_all:.3f}"
+        f"Emotion Accuracy: {avg_acc:.3f} ± {std_acc:.3f}\n" # 新增
+        f"Overall VAD: {avg_all:.3f}"
     )
     
     logging.info(f"\n{'='*50}\n{final_results}\n{'='*50}")

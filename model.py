@@ -26,6 +26,7 @@ class VADConfig(PretrainedConfig):
         num_groups=8,
         wav2vec_dim=0,         # 新增：wav2vec特征维度，0表示不使用
         data2vec_dim=0,       # 新增：data2vec特征维度，0表示不使用
+        num_emotions=8,  # [修改 1] 新增：离散情感类别数，默认为8 (根据dataset.py)
         **kwargs
     ):
         """
@@ -58,6 +59,7 @@ class VADConfig(PretrainedConfig):
         self.num_groups = num_groups
         self.wav2vec_dim = wav2vec_dim
         self.data2vec_dim = data2vec_dim
+        self.num_emotions = num_emotions # [修改 1] 赋值
 
 class VADModelWithGating(PreTrainedModel):
     """
@@ -93,21 +95,32 @@ class VADModelWithGating(PreTrainedModel):
         )
         
         # 计算融合后的特征维度
-        fusion_output_dim = config.emotion2vec_dim * self.num_features
+        fusion_output_dim = config.emotion2vec_dim * 2
         
         # 修改输入投影层维度
         self.input_proj = nn.Linear(fusion_output_dim, config.hidden_dim)
         
         # Transformer编码器层
-        self.encoder_layers = nn.ModuleList([
-            ModelComponents.TransformerEncoderLayer(config)
-            for _ in range(config.num_hidden_layers)
-        ])
+        # self.encoder_layers = nn.ModuleList([
+        #     ModelComponents.TransformerEncoderLayer(config)
+        #     for _ in range(config.num_hidden_layers)
+        # ])
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.hidden_dim,
+            nhead=config.num_attention_heads,
+            dim_feedforward=config.intermediate_dim,
+            dropout=config.hidden_dropout_prob,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True # 现代 Transformer 通常使用 Pre-Norm
+        )
+        self.encoder_layers = nn.TransformerEncoder(encoder_layer, num_layers=config.num_hidden_layers)
         
         # 输出层
         self.pooler = ModelComponents.AttentionPooling(config.hidden_dim)
-        self.output_proj = nn.Linear(config.hidden_dim, 3)
-        
+
+        self.output_proj_vad = nn.Linear(config.hidden_dim, 3)
+
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         
     def forward(self, features, padding_mask=None):
@@ -122,21 +135,23 @@ class VADModelWithGating(PreTrainedModel):
             预测结果、门控权重和池化特征
         """
         # 特征融合
-        x, gate_weights = self.feature_fusion(features)
+        x, gate_weights, current_temp = self.feature_fusion(features)
         
         # 将融合后的特征映射到hidden_dim
         x = self.input_proj(x)
         x = self.dropout(x)
         
         # Transformer编码
-        for layer in self.encoder_layers:
-            x = layer(x, padding_mask)
+        # for layer in self.encoder_layers:
+        #     x = layer(x, padding_mask)
+        x = self.encoder_layers(x, src_key_padding_mask=padding_mask)
             
         # 池化和输出
         pooled_features = self.pooler(x, padding_mask)
-        x = torch.sigmoid(self.output_proj(pooled_features))
+        # VAD任务: 使用Sigmoid将输出限制在[0,1] (假设VAD标签已归一化)
+        vad_output = torch.sigmoid(self.output_proj_vad(pooled_features))
         
-        return x, gate_weights, pooled_features
+        return vad_output, gate_weights, pooled_features, current_temp
         
     def get_fusion_weights(self):
         """
